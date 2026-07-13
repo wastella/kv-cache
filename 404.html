@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Page not found — kv/cache</title>
+  <meta name="robots" content="noindex" />
+  <link rel="icon" href="https://wastella.github.io/kv-cache/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="https://wastella.github.io/kv-cache/favicon.ico" sizes="any" />
+  <style>
+    :root {
+      --bg: #f6f5f0;
+      --ink: #17160f;
+      --muted: #726f63;
+      --border: #ddd9cc;
+      --evict: #b5410f;
+      --serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 64px 24px 96px;
+    }
+    .wordmark {
+      font-family: var(--serif);
+      font-style: italic;
+      font-size: 26px;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      text-decoration: none;
+    }
+    header {
+      padding-bottom: 32px;
+      margin-bottom: 48px;
+      border-bottom: 1px solid var(--border);
+    }
+    .kicker {
+      font-size: 12.5px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--evict);
+      margin: 0 0 16px;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-style: italic;
+      font-weight: 400;
+      font-size: 40px;
+      margin: 0 0 20px;
+      line-height: 1.2;
+    }
+    p { margin: 0 0 16px; color: var(--ink); }
+    .muted { color: var(--muted); }
+    ul.rows {
+      list-style: none;
+      margin: 32px 0 0;
+      padding: 0;
+      border-top: 1px solid var(--border);
+    }
+    ul.rows li {
+      border-bottom: 1px solid var(--border);
+    }
+    ul.rows a {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 4px;
+      color: var(--ink);
+      text-decoration: none;
+    }
+    ul.rows a:hover { color: var(--evict); }
+    .row-index { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <a href="https://wastella.github.io/kv-cache/" class="wordmark">kv/cache</a>
+    </header>
+
+    <main>
+      <p class="kicker">404</p>
+      <h1>That page got evicted.</h1>
+      <p>
+        Nothing lives at this URL &mdash; maybe the link was mistyped, or the
+        page moved. Unlike the demos on this site, this eviction wasn't
+        scored, it was just a miss.
+      </p>
+      <p class="muted">
+        Try one of these instead:
+      </p>
+
+      <ul class="rows">
+        <li><a href="https://wastella.github.io/kv-cache/index.html"><span>Home</span><span class="row-index">&rarr;</span></a></li>
+        <li><a href="https://wastella.github.io/kv-cache/basics.html"><span>Basics &mdash; what is a KV cache?</span><span class="row-index">&rarr;</span></a></li>
+        <li><a href="https://wastella.github.io/kv-cache/catalogue/index.html"><span>Catalogue &mdash; compression methods</span><span class="row-index">&rarr;</span></a></li>
+        <li><a href="https://wastella.github.io/kv-cache/concepts/index.html"><span>Concepts &mdash; architecture &amp; systems</span><span class="row-index">&rarr;</span></a></li>
+        <li><a href="https://wastella.github.io/kv-cache/contact.html"><span>Contact &mdash; report a broken link</span><span class="row-index">&rarr;</span></a></li>
+      </ul>
+    </main>
+  </div>
+</body>
+</html>
