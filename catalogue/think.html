@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ThinK — kv/cache</title>
+  <meta name="description" content="Prune channels within each kept key vector instead of dropping whole tokens: ThinK, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / dimension-pruning</p>
+      <h1>ThinK</h1>
+      <p class="lede">
+        Every method up to this point compresses the cache by deciding which
+        <em>tokens</em> to keep. ThinK doesn't touch that axis at all — it
+        shrinks each kept key vector itself, by pruning the individual
+        dimensions (channels) that turn out to carry the least signal.
+      </p>
+
+      <h2>Redundancy in a different axis</h2>
+      <p>
+        Xu et al. looked at the channel dimension of the key cache — not the
+        sequence-length axis every eviction method in this catalogue
+        operates on — and found real redundancy there too: a key vector's
+        dimensions contribute very unevenly to attention. The per-channel
+        magnitude distribution is uneven, and the attention weights that
+        result show a low-rank structure. Some dimensions are doing real
+        work; plenty are close to dead weight, consistently, across many
+        cached tokens.
+      </p>
+      <p>
+        ThinK scores each channel by multiplying two magnitudes: how hard
+        the last <code>window_size</code> queries lean on that channel
+        (mean squared query value, averaged over that window), and how hard
+        every key currently sitting in the cache leans on it (mean squared
+        key value, averaged over the <em>entire</em> cache, not just the
+        window). That score is a property of the head as a whole, not of
+        any one token, so the pruning decision is "which channels are
+        useless for this attention head," not "which channels are useless
+        for this specific token" — every kept token in that head loses the
+        same slice of its vector.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Each row is one cached token's key vector, shown as a strip of
+        channels. The greyed-out columns — the pruned channels — are
+        identical down every row, because ThinK prunes the same channels
+        for every token within a head, not a different set per token.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> The per-channel importance
+        scores here are generated locally from a deterministic seed, not
+        computed from real query/key magnitudes — illustrative of which
+        channels get pruned and shared across tokens, not extracted from a
+        real model.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because ThinK prunes channels rather than tokens, it's compressing
+        an orthogonal axis to everything else in this catalogue — it
+        composes with any token-eviction method instead of competing with
+        it for the same budget (kvpress's own docs give
+        <code>ComposedPress([SnapKVPress(0.5), ThinKPress(0.5)])</code> as
+        an example, stacking both savings). The cost is that the pruning
+        decision is coarser than a per-token method: it's the same channel
+        mask for every token in a head, so a channel that's dead weight on
+        average but briefly important for one specific token has no way to
+        survive. There's also a practical wrinkle: kvpress's current
+        implementation zeroes pruned dimensions rather than physically
+        shrinking the stored tensor, so realizing the memory savings in
+        deployment needs an extra packing step beyond what's in the library
+        today.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>ThinKPress</code>, which
+        re-derives windowed query states, scores key channels by
+        <code>queries_norm * keys_norm</code>, and scatters zeros into the
+        lowest-scoring dimensions. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/think_press.py" target="_blank" rel="noopener">think_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2407.21018" target="_blank" rel="noopener">Xu, Jie, Dong, Wang, Lu, Zhou, Saha, Xiong, Sahoo, "ThinK: Thinner Key Cache by Query-Driven Pruning," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const THINK_CHANNELS = 24;
+    const THINK_TOKEN_IDX = [0, 5, 10, 15, 20, 25];
+
+    // Per-channel importance is a property of the attention head as a
+    // whole (query side aggregated over a recent window, key side
+    // aggregated over the entire cache) — not of any one cached token —
+    // so every row shares the same score per channel.
+    function thinkChannelScores(windowSize) {
+      const scores = [];
+      for (let c = 0; c < THINK_CHANNELS; c++) {
+        scores.push(seeded("think-channel-" + c + "-w" + windowSize));
+      }
+      return scores;
+    }
+
+    function thinkPrunedSet(scores, ratio) {
+      const nPruned = Math.round(THINK_CHANNELS * ratio);
+      const ranked = scores.map((s, c) => [s, c]).sort((a, b) => a[0] - b[0]);
+      return new Set(ranked.slice(0, nPruned).map((p) => p[1]));
+    }
+
+    function createThinkDemo({ root, tokens }) {
+      const params = { ratio: 0.5, windowSize: 6 };
+      const rowIdx = THINK_TOKEN_IDX.filter((i) => i < tokens.length);
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("ThinK — channel pruning within kept key vectors (" + THINK_CHANNELS + " simulated channels)")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("kept channel")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted" }), document.createTextNode("pruned channel")]));
+      root.appendChild(legend);
+
+      const grid = el("div", { class: "channel-grid" });
+      root.appendChild(grid);
+
+      const rows = rowIdx.map((i) => {
+        const cells = [];
+        const cellsWrap = el("div", { class: "channel-cells" });
+        for (let c = 0; c < THINK_CHANNELS; c++) {
+          const cell = el("span", { class: "channel-cell" });
+          cells.push(cell);
+          cellsWrap.appendChild(cell);
+        }
+        const label = el("div", { class: "channel-label" }, [document.createTextNode('"' + tokens[i] + '"')]);
+        grid.appendChild(el("div", { class: "channel-row" }, [label, cellsWrap]));
+        return cells;
+      });
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const controls = [
+        { key: "ratio", label: "channel compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "windowSize", label: "observation window", min: 2, max: 16, step: 1, default: 6 },
+      ];
+      controls.forEach((c) => {
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(String(c.default))]);
+        const labelRow = el("label", {}, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = c.format ? c.format(v) : String(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statKept = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("channels kept")]),
+      ]);
+      const statSize = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("per-vector size")]),
+      ]);
+      statsWrap.appendChild(statKept);
+      statsWrap.appendChild(statSize);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const scores = thinkChannelScores(params.windowSize);
+        const pruned = thinkPrunedSet(scores, params.ratio);
+
+        rows.forEach((cells, r) => {
+          const tokIdx = rowIdx[r];
+          cells.forEach((cell, c) => {
+            const isPruned = pruned.has(c);
+            cell.classList.toggle("pruned", isPruned);
+            if (!isPruned) {
+              const mag = seeded(tokens[tokIdx] + tokIdx + "-c" + c);
+              cell.style.background = `rgba(23, 22, 15, ${0.35 + mag * 0.65})`;
+            } else {
+              cell.style.background = "";
+            }
+          });
+        });
+
+        const keptCount = THINK_CHANNELS - pruned.size;
+        statKept.firstChild.textContent = `${keptCount} / ${THINK_CHANNELS}`;
+        statSize.firstChild.textContent = Math.round((keptCount / THINK_CHANNELS) * 100) + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createThinkDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

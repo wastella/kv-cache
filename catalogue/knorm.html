@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Knorm — kv/cache</title>
+  <meta name="description" content="Score cached keys by nothing but their own L2 norm — no attention required: Knorm, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / norm-based</p>
+      <h1>Knorm</h1>
+      <p class="lede">
+        Most methods in this catalogue need at least one attention weight to
+        decide what matters. Knorm doesn't — it scores each cached key by
+        nothing but the key vector's own length, and evicts the ones that are
+        unusually long.
+      </p>
+
+      <h2>A shortcut hiding in the key vectors</h2>
+      <p>
+        Devoto et al. measured the attention scores cached KV pairs actually
+        receive during decoding, alongside the L2 norm of their key vectors,
+        across several models and layers. The correlation was strong and
+        consistent: keys with a <strong>low</strong> L2 norm tend to receive
+        <strong>high</strong> attention later on, and high-norm keys tend to
+        be mostly ignored. That's a strange thing to be true — a key's norm
+        is fixed the moment it's computed, before any query has looked at it,
+        with no dependence on the current decoding step or anything
+        attention-related at all.
+      </p>
+      <p>
+        Knorm turns that correlation directly into a score:
+        <code>score = -‖k‖₂</code>. Since kvpress keeps the
+        highest-scoring tokens during compression, a low norm produces a
+        less negative (i.e. higher) score, so low-norm keys survive and
+        high-norm keys are evicted first. There's no forward-looking
+        attention matrix, no running accumulation, no observation window —
+        just a norm, computed once per cached key.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Shade tracks each token's simulated key-vector norm, inverted —
+        the darkest tokens have the smallest norm and are the ones this
+        method is most confident about keeping.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real key vector
+        behind these tokens. This demo assigns each one a synthetic "norm"
+        deterministically from its text, purely to demonstrate the eviction
+        rule Knorm applies once actual norms come out of a forward pass.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Knorm is about as cheap as content-aware compression gets: the key
+        vectors already exist as a byproduct of the model doing its normal
+        work, so measuring their length adds no extra forward passes, no
+        held-out queries, and no per-step bookkeeping — useful when the
+        scoring itself has to be almost free. The tradeoff is that it's a
+        purely correlational shortcut — norm
+        predicts attention on average, but it can't tell "predictably
+        important" apart from "surprisingly important right now" the way a
+        method that actually looks at attention can. In practice its
+        accuracy tends to fall further behind attention-aware methods as
+        the compression ratio gets more aggressive.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>KnormPress</code>, whose
+        <code>score()</code> is literally <code>-keys.norm(dim=-1)</code>.
+        See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/knorm_press.py" target="_blank" rel="noopener">knorm_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2406.11430" target="_blank" rel="noopener">Devoto, Zhao, Scardapane, Minervini, "A Simple and Effective L2 Norm-Based Strategy for KV Cache Compression," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeKnorm(tokens, params) {
+      const N = tokens.length;
+      // Synthetic per-token key-vector norm — a property of the token
+      // alone, not of attention or position. Real KnormPress scores as
+      // -||k||_2 and keeps the highest-scoring (i.e. lowest-norm) tokens.
+      const norm = tokens.map((tok, i) => 0.15 + seeded(tok + i + "norm") * 0.85);
+      const keepScore = norm.map((n) => -n);
+      const budget = Math.max(1, Math.round(N * (1 - params.ratio)));
+      const ranked = keepScore.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(keepScore) };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "Knorm — key-vector L2 norm (inverted)",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeKnorm,
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SnapKV — kv/cache</title>
+  <meta name="description" content="Predict which tokens will matter using attention from the end of the prompt, before generation starts: SnapKV, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / prediction-based</p>
+      <h1>SnapKV</h1>
+      <p class="lede">
+        StreamingLLM and H2O both operate during generation, evicting as new
+        tokens arrive. SnapKV does its compression once, at the end of
+        prefill — before a single token has been generated — by using the end
+        of the prompt itself as a preview of what the model is about to ask for.
+      </p>
+
+      <h2>The prompt already tells you what it needs</h2>
+      <p>
+        Li et al. observed that the attention pattern of the last few tokens
+        of a prompt — the <strong>observation window</strong> — is a strong
+        predictor of what the model will keep attending to during generation.
+        Intuitively: the tail end of a prompt (often an instruction, like "…
+        summarize the above" or "… answer the question below") is where the
+        model's actual intent lives, and its attention already points at the
+        parts of the context that matter for that intent.
+      </p>
+      <p>
+        So instead of waiting to observe attention during generation like H2O,
+        SnapKV computes, once, how much attention each token in the
+        observation window pays to every earlier token, pools those scores
+        together, and keeps the top-scoring tokens (plus the window itself).
+        The rest of the cache is compressed before generation even begins —
+        which means the memory savings start immediately, not gradually.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        The last tokens (outlined) are the observation window — always kept.
+        Darker earlier tokens received more simulated attention from that
+        window and are more likely to survive compression.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> As with the H2O demo, the
+        "attention from the observation window" here is generated locally
+        with a distance-decay term plus a few random topical-match spikes —
+        illustrative of the mechanism, not extracted from a real model.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because it works entirely from the prompt, SnapKV is a strong fit for
+        long-document workloads with a short, focused instruction at the end
+        — RAG, document QA, summarization of a known task. It compresses once
+        and is done, with no ongoing scoring overhead during decode. The
+        assumption it leans on is also its main limitation: if the
+        instruction is vague, appears before the relevant context rather than
+        after it, or the model's real information need only becomes clear
+        partway through generation, the observation window is a weaker
+        predictor and the compression can discard tokens that turn out to matter.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress's <code>SnapKVPress.score()</code> takes attention from the
+        last <code>window_size</code> prompt tokens (64, by default) to every
+        earlier one, averages it across those queries, then runs it through a
+        small average-pooling kernel before ranking. That pooling step is
+        what keeps neighboring important tokens together instead of scattering
+        the surviving set across isolated positions — the SnapKV paper found
+        that keeping only scattered top-scorers, without pooling, tends to
+        chop up the context and drop tokens a later one still needed. The
+        window itself is padded to the max score so the ranking can never
+        prune it. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/snapkv_press.py" target="_blank" rel="noopener">snapkv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2404.14469" target="_blank" rel="noopener">Li et al., "SnapKV: LLM Knows What You are Looking for Before Generation," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeSnapKV(tokens, params) {
+      const N = tokens.length;
+      const winSize = Math.min(Math.round(params.windowSize), N);
+      const obsStart = Math.max(0, N - winSize);
+
+      const raw = new Array(N).fill(0);
+      for (let i = 0; i < obsStart; i++) {
+        let s = 0;
+        for (let q = obsStart; q < N; q++) {
+          const dist = q - i;
+          const base = Math.exp(-dist / 12);
+          const topicMatch = seeded(tokens[i] + tokens[q]) < 0.14 ? 1.1 : 0;
+          s += base * 0.3 + topicMatch;
+        }
+        raw[i] = s;
+      }
+      const windowFloor = Math.max(...raw.slice(0, obsStart), 0) + 0.05;
+      for (let i = obsStart; i < N; i++) raw[i] = windowFloor;
+
+      const alwaysKeep = new Set();
+      const tags = new Map();
+      for (let i = obsStart; i < N; i++) {
+        alwaysKeep.add(i);
+        tags.set(i, ["window"]);
+      }
+
+      const budget = Math.max(alwaysKeep.size, Math.round(N * (1 - params.ratio)));
+      const remaining = budget - alwaysKeep.size;
+      const ranked = raw
+        .map((s, i) => [s, i])
+        .filter(([, i]) => !alwaysKeep.has(i))
+        .sort((a, b) => b[0] - a[0]);
+      const kept = new Set([...alwaysKeep, ...ranked.slice(0, remaining).map((p) => p[1])]);
+
+      return { kept, scores: normalize(raw), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "SnapKV — observation-window attention",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "windowSize", label: "observation window", min: 2, max: 8, step: 1, default: 4 },
+      ],
+      compute: computeSnapKV,
+    });
+  </script>
+</body>
+</html>

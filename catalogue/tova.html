@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TOVA — Token Omission Via Attention — kv/cache</title>
+  <meta name="description" content="Score tokens from a single decoding step's attention snapshot, recomputed fresh every step: TOVA, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / attention-based</p>
+      <h1>TOVA — Token Omission Via Attention</h1>
+      <p class="lede">
+        H2O keeps a running, accumulated attention score per token across
+        every generation step. TOVA throws that history away: at each
+        decoding step it looks only at the attention the <em>current</em>
+        token just paid, decides what to keep from that one snapshot, and
+        repeats the whole decision from scratch next step.
+      </p>
+
+      <h2>A transformer as a bounded RNN</h2>
+      <p>
+        Oren et al. frame the comparison directly: a decoder-only
+        transformer can be viewed as a recurrent network with an unbounded
+        hidden state — the KV cache is that state, growing by one entry per
+        token instead of being folded into a fixed-size vector the way a
+        real RNN's hidden state is. Capping the KV cache size is, in this
+        framing, exactly what it takes to turn a transformer into a genuine
+        <strong>bounded</strong> multi-state RNN. TOVA is the eviction policy
+        they propose for doing that: at each decoding step, take the current
+        token's attention distribution over every token still in the cache
+        (averaged across heads), and if the cache is over budget, drop
+        whichever token gets the least attention from that single query.
+      </p>
+      <p>
+        The structural difference from H2O is that TOVA keeps no running
+        statistics at all. A token that was a heavy hitter for the last
+        fifty steps but gets ignored on this one step is a candidate for
+        eviction right now — nothing about its history protects it. That's
+        much simpler state to maintain (one attention row instead of an
+        accumulator per token) but a noisier signal, since one query's
+        attention pattern can swing sharply from the next query's.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Darker tokens received more simulated attention from the current
+        decoding step alone. Move the decode-step slider and watch which
+        tokens are kept reshuffle — that volatility is what TOVA trades away
+        by not keeping H2O's accumulated score.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> As with the H2O and SnapKV
+        demos, "attention from the current step" here is a locally generated
+        stand-in (a recency term plus a few random spikes reseeded per
+        decode step) — illustrative of the mechanism, not extracted from a
+        real model.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Minimal bookkeeping is the whole appeal: one attention row per step,
+        no per-token running total to carry over from the last one. The
+        paper's framing also makes the cache-size/quality tradeoff unusually
+        explicit — you're literally choosing the hidden-state size of a
+        bounded RNN. The cost is exactly the volatility that simplicity
+        buys: eviction decisions can flip from one step to the next, so a
+        token that's genuinely important but only momentarily
+        under-attended — because the current query happens to be about
+        something else — can be evicted before its importance shows up
+        again.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>TOVAPress</code>: it takes the last
+        query's attention weights, averages them across heads to get one
+        score per cached position, then overwrites the score of the token
+        just added with the row's max score (plus a hair more) so it can't
+        be the one evicted this step. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/tova_press.py" target="_blank" rel="noopener">tova_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2401.06104" target="_blank" rel="noopener">Oren, Hassid, Yarden, Adi, Schwartz, "Transformers are Multi-State RNNs," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeTOVA(tokens, params) {
+      const N = tokens.length;
+      const step = Math.round(params.step);
+      const raw = tokens.map((tok, i) => {
+        const dist = N - 1 - i;
+        const base = Math.exp(-dist / 9);
+        const isSpike = seeded(tok + i + "tova" + step) < 0.2;
+        const spike = isSpike ? 0.8 + seeded(tok + i + "mag" + step) * 0.8 : 0;
+        return base * 0.25 + spike;
+      });
+      const budget = Math.max(1, Math.round(N * (1 - params.ratio)));
+      const ranked = raw.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(raw) };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "TOVA — single-step attention snapshot",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "step", label: "decode step", min: 1, max: 8, step: 1, default: 1 },
+      ],
+      compute: computeTOVA,
+    });
+  </script>
+</body>
+</html>

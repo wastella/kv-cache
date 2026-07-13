@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Evaluating compression — kv/cache</title>
+  <meta name="description" content="Compression ratio alone is a meaningless number. How perplexity, needle-in-a-haystack, and long-context benchmark suites like RULER and LongBench each answer 'is this safe' differently." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="../catalogue/index.html">Catalogue</a>
+          <a href="index.html" class="active">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">concepts</a> / methodology</p>
+      <h1>Evaluating compression</h1>
+      <p class="lede">
+        Every method in the <a href="../catalogue/index.html">catalogue</a>
+        can report a compression ratio — remove half the cache, remove 90%
+        of it, the number is trivial to produce. None of that number tells
+        you whether the model still works. "Good" only means something once
+        you attach a quality metric to the ratio, and — this is the part
+        that trips people up — <strong>different metrics disagree with each
+        other</strong> about which methods are safe.
+      </p>
+
+      <h2>Compression ratio is not a metric</h2>
+      <p>
+        A method that compresses to 10% of the original cache but silently
+        drops the one sentence a downstream question depends on is worse
+        than one that only reaches 40% but keeps it. Ratio measures cost.
+        It says nothing about what broke. Every number below is a way of
+        measuring what broke, and each one is blind to a different kind of
+        failure — which is why the field doesn't settle on just one.
+      </p>
+
+      <h2>Perplexity: cheap, and mostly blind at long range</h2>
+      <p>
+        Perplexity asks a narrow question — given everything before this
+        point, how surprised is the model by the actual next token? — and
+        averages that over a held-out text. It's essentially free: no
+        labeled answers, no task-specific harness, just a forward pass and
+        a formula, so it's the metric that shows up first in almost every
+        compression paper's ablations.
+      </p>
+      <p>
+        The narrowness is also the weakness. Next-token prediction mostly
+        depends on local, syntactic context — the next word after "the
+        capital of France is" is easy to guess well even if the model has
+        forgotten a fact three thousand tokens back that a real question
+        would have needed. A method can evict exactly the token a user's
+        query would have needed, and perplexity on generic held-out text
+        often won't move enough to notice. It's a decent early smoke test
+        for "did this method break the model outright," and a poor proxy
+        for "can this model still use its long context."
+      </p>
+
+      <h2>Needle-in-a-haystack: did it keep the one sentence that mattered</h2>
+      <p>
+        Needle-in-a-haystack, popularized by Greg Kamradt's testing
+        framework, is the direct fix for perplexity's blind spot: insert
+        one specific fact (the "needle") at a controlled position inside a
+        long, otherwise irrelevant document (the "haystack"), then ask the
+        model to retrieve it after compression. Sweep the needle's depth
+        and the context length together and you get a heatmap of exactly
+        where retrieval starts failing — including the well-known failure
+        mode where facts buried in the <em>middle</em> of a long context are
+        recalled far worse than ones near the start or end.
+      </p>
+      <p>
+        It's precise about the failure it's designed to catch: a method
+        that evicts the needle's tokens fails hard and visibly. What it
+        doesn't capture is anything more diffuse — a method that keeps
+        every single needle perfectly while quietly degrading the model's
+        ability to synthesize <em>several</em> facts together, or to follow
+        an argument that depends on tone and structure rather than one
+        retrievable sentence, can look flawless on this test and still be
+        much worse to actually use.
+      </p>
+
+      <h2>RULER and LongBench: harder to game than a single needle</h2>
+      <p>
+        Broader long-context suites exist precisely to catch what a single
+        needle can't. <strong>RULER</strong> (Hsieh et al., 2024) keeps the
+        synthetic, controllable spirit of needle-in-a-haystack but expands
+        it — multiple needles at once, distractor needles designed to
+        confuse retrieval, and non-retrieval task types like multi-hop
+        tracing and aggregation across the whole context, all at
+        systematically varied lengths. Its headline result was itself an
+        evaluation finding: of the models tested that advertise context
+        windows of 32K tokens or more, only about half actually maintained
+        satisfactory performance once evaluated at 32K — the rest degraded
+        well before reaching the length they claimed to support.
+      </p>
+      <p>
+        <strong>LongBench</strong> (Bai et al., 2023) takes a different
+        angle — realistic tasks instead of synthetic ones: 21 datasets
+        across six task categories (single- and multi-document QA,
+        summarization, few-shot learning, synthetic tasks, and code
+        completion) in both English and Chinese, with documents averaging
+        several thousand words. A method has to hold up across
+        summarization and code and multi-hop QA simultaneously, which is a
+        much harder bar to clear by accident than one retrievable fact.
+      </p>
+      <p>
+        Neither suite is strictly "better" than needle-in-a-haystack — they
+        answer a broader question at higher compute cost per method
+        evaluated, which is exactly why perplexity, a single needle sweep,
+        and a full suite all still coexist: cheap-and-narrow for fast
+        iteration, expensive-and-broad for the number you'd actually trust.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        Three illustrative method archetypes, evaluated the same way, on
+        two different metrics, at the same compression ratios. Hover a
+        line, or a legend item, to compare.
+      </p>
+
+      <div class="demo" id="chart-demo">
+        <div class="demo-label">quality vs. compression ratio, by evaluation style</div>
+        <div class="chart-legend" id="chart-legend"></div>
+
+        <div class="chart-panel-title">perplexity increase over uncompressed baseline (%) — lower is better</div>
+        <div id="chart-perplexity"></div>
+        <details style="margin:6px 0 4px;">
+          <summary class="muted" style="font-size:12px;cursor:pointer;">show as table</summary>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;border-bottom:1px solid var(--border);padding:4px 6px;">ratio</th>
+                <th style="text-align:right;border-bottom:1px solid var(--border);padding:4px 6px;">attention-aware</th>
+                <th style="text-align:right;border-bottom:1px solid var(--border);padding:4px 6px;">cheap heuristic</th>
+                <th style="text-align:right;border-bottom:1px solid var(--border);padding:4px 6px;">position-only</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td style="padding:3px 6px;">0%</td><td style="text-align:right;padding:3px 6px;">0.0</td><td style="text-align:right;padding:3px 6px;">0.0</td><td style="text-align:right;padding:3px 6px;">0.0</td></tr>
+              <tr><td style="padding:3px 6px;">10%</td><td style="text-align:right;padding:3px 6px;">0.5</td><td style="text-align:right;padding:3px 6px;">1.0</td><td style="text-align:right;padding:3px 6px;">0.8</td></tr>
+              <tr><td style="padding:3px 6px;">20%</td><td style="text-align:right;padding:3px 6px;">1.0</td><td style="text-align:right;padding:3px 6px;">2.5</td><td style="text-align:right;padding:3px 6px;">1.8</td></tr>
+              <tr><td style="padding:3px 6px;">30%</td><td style="text-align:right;padding:3px 6px;">1.5</td><td style="text-align:right;padding:3px 6px;">4.5</td><td style="text-align:right;padding:3px 6px;">3.0</td></tr>
+              <tr><td style="padding:3px 6px;">40%</td><td style="text-align:right;padding:3px 6px;">2.0</td><td style="text-align:right;padding:3px 6px;">7.0</td><td style="text-align:right;padding:3px 6px;">4.5</td></tr>
+              <tr><td style="padding:3px 6px;">50%</td><td style="text-align:right;padding:3px 6px;">3.0</td><td style="text-align:right;padding:3px 6px;">10.0</td><td style="text-align:right;padding:3px 6px;">6.5</td></tr>
+              <tr><td style="padding:3px 6px;">60%</td><td style="text-align:right;padding:3px 6px;">4.5</td><td style="text-align:right;padding:3px 6px;">15.0</td><td style="text-align:right;padding:3px 6px;">9.5</td></tr>
+              <tr><td style="padding:3px 6px;">70%</td><td style="text-align:right;padding:3px 6px;">7.0</td><td style="text-align:right;padding:3px 6px;">22.0</td><td style="text-align:right;padding:3px 6px;">14.0</td></tr>
+              <tr><td style="padding:3px 6px;">80%</td><td style="text-align:right;padding:3px 6px;">11.0</td><td style="text-align:right;padding:3px 6px;">32.0</td><td style="text-align:right;padding:3px 6px;">21.0</td></tr>
+              <tr><td style="padding:3px 6px;">90%</td><td style="text-align:right;padding:3px 6px;">18.0</td><td style="text-align:right;padding:3px 6px;">46.0</td><td style="text-align:right;padding:3px 6px;">32.0</td></tr>
+            </tbody>
+          </table>
+        </details>
+
+        <div class="chart-panel-title">needle-in-a-haystack recall (%) — higher is better</div>
+        <div id="chart-recall"></div>
+        <details style="margin:6px 0 4px;">
+          <summary class="muted" style="font-size:12px;cursor:pointer;">show as table</summary>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;border-bottom:1px solid var(--border);padding:4px 6px;">ratio</th>
+                <th style="text-align:right;border-bottom:1px solid var(--border);padding:4px 6px;">attention-aware</th>
+                <th style="text-align:right;border-bottom:1px solid var(--border);padding:4px 6px;">cheap heuristic</th>
+                <th style="text-align:right;border-bottom:1px solid var(--border);padding:4px 6px;">position-only</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td style="padding:3px 6px;">0%</td><td style="text-align:right;padding:3px 6px;">100</td><td style="text-align:right;padding:3px 6px;">100</td><td style="text-align:right;padding:3px 6px;">100</td></tr>
+              <tr><td style="padding:3px 6px;">10%</td><td style="text-align:right;padding:3px 6px;">99</td><td style="text-align:right;padding:3px 6px;">95</td><td style="text-align:right;padding:3px 6px;">70</td></tr>
+              <tr><td style="padding:3px 6px;">20%</td><td style="text-align:right;padding:3px 6px;">98</td><td style="text-align:right;padding:3px 6px;">85</td><td style="text-align:right;padding:3px 6px;">40</td></tr>
+              <tr><td style="padding:3px 6px;">30%</td><td style="text-align:right;padding:3px 6px;">97</td><td style="text-align:right;padding:3px 6px;">70</td><td style="text-align:right;padding:3px 6px;">22</td></tr>
+              <tr><td style="padding:3px 6px;">40%</td><td style="text-align:right;padding:3px 6px;">95</td><td style="text-align:right;padding:3px 6px;">55</td><td style="text-align:right;padding:3px 6px;">12</td></tr>
+              <tr><td style="padding:3px 6px;">50%</td><td style="text-align:right;padding:3px 6px;">92</td><td style="text-align:right;padding:3px 6px;">40</td><td style="text-align:right;padding:3px 6px;">7</td></tr>
+              <tr><td style="padding:3px 6px;">60%</td><td style="text-align:right;padding:3px 6px;">88</td><td style="text-align:right;padding:3px 6px;">28</td><td style="text-align:right;padding:3px 6px;">4</td></tr>
+              <tr><td style="padding:3px 6px;">70%</td><td style="text-align:right;padding:3px 6px;">80</td><td style="text-align:right;padding:3px 6px;">18</td><td style="text-align:right;padding:3px 6px;">2</td></tr>
+              <tr><td style="padding:3px 6px;">80%</td><td style="text-align:right;padding:3px 6px;">68</td><td style="text-align:right;padding:3px 6px;">11</td><td style="text-align:right;padding:3px 6px;">1</td></tr>
+              <tr><td style="padding:3px 6px;">90%</td><td style="text-align:right;padding:3px 6px;">50</td><td style="text-align:right;padding:3px 6px;">6</td><td style="text-align:right;padding:3px 6px;">1</td></tr>
+            </tbody>
+          </table>
+        </details>
+      </div>
+      <div class="note">
+        <strong>Illustrative, not measured.</strong> These three curves are
+        archetypes, not results from any real paper or model — they exist
+        to make one point visible: <em>the same three methods can rank in
+        a completely different order depending on which metric you read.</em>
+        On perplexity, all three look like reasonable options even out
+        past 70% compression. On needle-in-a-haystack, the position-only
+        archetype has already collapsed by 30%. Real per-method numbers on
+        real benchmarks are in kvpress's leaderboard, linked below.
+      </div>
+
+      <h2>Where this leaves you</h2>
+      <p>
+        A compression ratio by itself is a cost, not a result — reading
+        one without a paired quality number is the single most common way
+        this catalogue's methods get compared unfairly. The paired
+        quality number needs to be read alongside <em>which kind</em> of
+        metric produced it: perplexity is the cheapest and the most likely
+        to miss a real problem; needle-in-a-haystack catches the specific
+        failure of "dropped the fact that mattered" but not diffuse
+        degradation; RULER and LongBench cost more to run per method but
+        are the hardest to accidentally pass. A method that only reports
+        perplexity hasn't shown you very much. A method with numbers on
+        all three has actually earned its compression ratio.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress ships its own <code>evaluation/</code> module — a CLI that
+        runs a given press against long-context datasets including RULER,
+        LongBench, LongBench-v2, Loogle, InfiniteBench, ZeroSCROLLS, and
+        needle-in-a-haystack, and saves predictions plus computed metrics
+        per run. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/tree/main/evaluation" target="_blank" rel="noopener">evaluation/</a>
+        in the kvpress repo. Real, measured results for the catalogue's
+        methods live on kvpress's own leaderboard:
+        <a href="https://huggingface.co/spaces/nvidia/kvpress-leaderboard" target="_blank" rel="noopener">kvpress-leaderboard on Hugging Face</a>.
+      </p>
+
+      <h3>Further reading</h3>
+      <p>
+        <a href="https://arxiv.org/abs/2404.06654" target="_blank" rel="noopener">Hsieh, Sun, Kriman, Acharya, Rekesh, Jia, Zhang, Ginsburg, "RULER: What's the Real Context Size of Your Long-Context Language Models?" 2024</a>.
+        <a href="https://arxiv.org/abs/2308.14508" target="_blank" rel="noopener">Bai, Lv, Zhang, Lyu, Tang, Huang, Du, Liu, Zeng, Hou, Dong, Tang, Li, "LongBench: A Bilingual, Multitask Benchmark for Long Context Understanding," ACL 2024</a>.
+        <a href="https://github.com/gkamradt/LLMTest_NeedleInAHaystack" target="_blank" rel="noopener">Kamradt, "LLMTest_NeedleInAHaystack"</a>, the original needle-in-a-haystack test harness.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    // ---- tiny SVG line-chart component: shared legend, two panels ----
+    const CHART_X = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
+
+    const SERIES_DEFS = [
+      { key: "attn", name: "attention-aware", color: "#00968f" },
+      { key: "cheap", name: "cheap heuristic", color: "#8f6a00" },
+      { key: "pos", name: "position-only", color: "#b5410f" },
+    ];
+
+    const PERPLEXITY_DATA = {
+      attn: [0, 0.5, 1, 1.5, 2, 3, 4.5, 7, 11, 18],
+      cheap: [0, 1, 2.5, 4.5, 7, 10, 15, 22, 32, 46],
+      pos: [0, 0.8, 1.8, 3, 4.5, 6.5, 9.5, 14, 21, 32],
+    };
+
+    const RECALL_DATA = {
+      attn: [100, 99, 98, 97, 95, 92, 88, 80, 68, 50],
+      cheap: [100, 95, 85, 70, 55, 40, 28, 18, 11, 6],
+      pos: [100, 70, 40, 22, 12, 7, 4, 2, 1, 1],
+    };
+
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    function svgEl(tag, attrs = {}) {
+      const node = document.createElementNS(SVG_NS, tag);
+      for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+      return node;
+    }
+
+    function layoutLabels(items, minGap) {
+      // items: [{key, y}], mutates a sorted copy so end-labels never overlap
+      const sorted = items.slice().sort((a, b) => a.y - b.y);
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].y - sorted[i - 1].y < minGap) {
+          sorted[i].y = sorted[i - 1].y + minGap;
+        }
+      }
+      return sorted;
+    }
+
+    function buildTradeoffChart(root, { data, yMax, yTicks, valueSuffix }) {
+      const W = 640, H = 210;
+      const padL = 34, padR = 56, padT = 10, padB = 24;
+      const plotW = W - padL - padR;
+      const plotH = H - padT - padB;
+      const n = CHART_X.length;
+
+      const xAt = (i) => padL + (i * plotW) / (n - 1);
+      const yAt = (v) => padT + plotH - (v / yMax) * plotH;
+
+      root.className = "chart-svg-wrap";
+      root.setAttribute("tabindex", "0");
+      root.innerHTML = "";
+
+      const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+      root.appendChild(svg);
+
+      // gridlines + y ticks
+      yTicks.forEach((t) => {
+        const y = yAt(t);
+        svg.appendChild(svgEl("line", {
+          x1: padL, x2: padL + plotW, y1: y, y2: y,
+          stroke: "var(--border)", "stroke-width": 1,
+        }));
+        const label = svgEl("text", {
+          x: padL - 6, y: y + 3, "text-anchor": "end",
+          class: "chart-axis-label",
+        });
+        label.setAttribute("font-family", "var(--mono)");
+        label.setAttribute("font-size", "9.5");
+        label.setAttribute("fill", "var(--muted)");
+        label.textContent = t;
+        svg.appendChild(label);
+      });
+
+      // x ticks
+      CHART_X.forEach((xv, i) => {
+        const x = xAt(i);
+        const label = svgEl("text", { x, y: H - 6, "text-anchor": "middle" });
+        label.setAttribute("font-family", "var(--mono)");
+        label.setAttribute("font-size", "9.5");
+        label.setAttribute("fill", "var(--muted)");
+        label.textContent = xv + "%";
+        svg.appendChild(label);
+      });
+
+      // baseline axis
+      svg.appendChild(svgEl("line", {
+        x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH,
+        stroke: "var(--border-strong)", "stroke-width": 1,
+      }));
+
+      // lines + end markers
+      const markerGroups = {};
+      const endPoints = [];
+      SERIES_DEFS.forEach((s) => {
+        const values = data[s.key];
+        const points = values.map((v, i) => [xAt(i), yAt(v)]);
+        const d = points.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+
+        const group = svgEl("g", { "data-series": s.key, class: "chart-series" });
+        const path = svgEl("path", {
+          d, fill: "none", stroke: s.color, "stroke-width": 2,
+          "stroke-linejoin": "round", "stroke-linecap": "round",
+        });
+        group.appendChild(path);
+
+        const last = points[points.length - 1];
+        const dot = svgEl("circle", { cx: last[0], cy: last[1], r: 4, fill: s.color, stroke: "var(--bg)", "stroke-width": 2 });
+        group.appendChild(dot);
+
+        svg.appendChild(group);
+        markerGroups[s.key] = { group, path, dot, points };
+        endPoints.push({ key: s.key, y: last[1], value: values[values.length - 1] });
+      });
+
+      // collision-free end labels (value only — text stays in ink, identity comes from the dot)
+      const laidOut = layoutLabels(endPoints, 12);
+      laidOut.forEach((item) => {
+        const mg = markerGroups[item.key];
+        const last = mg.points[mg.points.length - 1];
+        if (Math.abs(item.y - last[1]) > 1.5) {
+          svg.appendChild(svgEl("line", {
+            x1: last[0] + 5, x2: padL + plotW + 6, y1: last[1], y2: item.y,
+            stroke: "var(--muted)", "stroke-width": 1, "stroke-dasharray": "1.5,1.5",
+          }));
+        }
+        const label = svgEl("text", { x: padL + plotW + 8, y: item.y + 3.2 });
+        label.setAttribute("font-family", "var(--mono)");
+        label.setAttribute("font-size", "10.5");
+        label.setAttribute("font-weight", "600");
+        label.setAttribute("fill", "var(--ink)");
+        label.textContent = Math.round(item.value * 10) / 10 + (valueSuffix || "");
+        svg.appendChild(label);
+      });
+
+      // crosshair + hit layer
+      const crosshair = svgEl("line", {
+        x1: padL, x2: padL, y1: padT, y2: padT + plotH,
+        stroke: "var(--ink)", "stroke-width": 1, opacity: 0,
+      });
+      svg.appendChild(crosshair);
+
+      const hoverDots = SERIES_DEFS.map((s) => {
+        const d = svgEl("circle", { r: 3.5, fill: s.color, stroke: "var(--bg)", "stroke-width": 1.5, opacity: 0 });
+        svg.appendChild(d);
+        return d;
+      });
+
+      const tooltip = el("div", { class: "chart-tooltip" });
+      root.appendChild(tooltip);
+
+      function showAt(i) {
+        const x = xAt(i);
+        crosshair.setAttribute("x1", x);
+        crosshair.setAttribute("x2", x);
+        crosshair.setAttribute("opacity", 1);
+
+        tooltip.innerHTML = "";
+        const xLine = el("div", { class: "t-x" }, [document.createTextNode("compression " + CHART_X[i] + "%")]);
+        tooltip.appendChild(xLine);
+
+        SERIES_DEFS.forEach((s, si) => {
+          const v = data[s.key][i];
+          const y = yAt(v);
+          hoverDots[si].setAttribute("cx", x);
+          hoverDots[si].setAttribute("cy", y);
+          hoverDots[si].setAttribute("opacity", 1);
+
+          const key = el("span", { class: "key", style: `border-color:${s.color};` });
+          const name = el("span", {}, [document.createTextNode(s.name)]);
+          const val = el("span", { class: "t-val" }, [document.createTextNode((Math.round(v * 10) / 10) + (valueSuffix || ""))]);
+          tooltip.appendChild(el("div", { class: "t-row" }, [key, name, val]));
+        });
+
+        const pct = x / W * 100;
+        tooltip.style.left = pct + "%";
+        tooltip.style.top = (yAt(Math.max(...SERIES_DEFS.map((s) => data[s.key][i]))) / H * 100) + "%";
+        tooltip.classList.add("visible");
+      }
+
+      function hide() {
+        crosshair.setAttribute("opacity", 0);
+        hoverDots.forEach((d) => d.setAttribute("opacity", 0));
+        tooltip.classList.remove("visible");
+      }
+
+      function nearestIndex(clientX) {
+        const rect = svg.getBoundingClientRect();
+        const relX = ((clientX - rect.left) / rect.width) * W;
+        let idx = Math.round(((relX - padL) / plotW) * (n - 1));
+        return Math.max(0, Math.min(n - 1, idx));
+      }
+
+      const hitLayer = svgEl("rect", {
+        x: padL, y: padT, width: plotW, height: plotH, fill: "transparent",
+        "pointer-events": "all",
+      });
+      svg.appendChild(hitLayer);
+
+      hitLayer.addEventListener("pointermove", (e) => showAt(nearestIndex(e.clientX)));
+      hitLayer.addEventListener("pointerleave", hide);
+      hitLayer.addEventListener("pointerdown", (e) => showAt(nearestIndex(e.clientX)));
+
+      let focusIndex = 0;
+      root.addEventListener("focus", () => showAt(focusIndex));
+      root.addEventListener("blur", hide);
+      root.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowRight") { focusIndex = Math.min(n - 1, focusIndex + 1); showAt(focusIndex); e.preventDefault(); }
+        else if (e.key === "ArrowLeft") { focusIndex = Math.max(0, focusIndex - 1); showAt(focusIndex); e.preventDefault(); }
+      });
+
+      return { root, markerGroups };
+    }
+
+    function buildLegend(root, charts) {
+      root.innerHTML = "";
+      SERIES_DEFS.forEach((s) => {
+        const swatch = el("span", { class: "line-swatch", style: `border-color:${s.color};` });
+        const item = el("span", { class: "item" }, [swatch, document.createTextNode(s.name)]);
+        item.addEventListener("mouseenter", () => setDim(s.key, true));
+        item.addEventListener("mouseleave", () => setDim(s.key, false));
+        root.appendChild(item);
+      });
+
+      function setDim(activeKey, on) {
+        root.querySelectorAll(".item").forEach((it, idx) => {
+          it.classList.toggle("dim", on && SERIES_DEFS[idx].key !== activeKey);
+        });
+        charts.forEach(({ markerGroups }) => {
+          Object.entries(markerGroups).forEach(([key, mg]) => {
+            mg.group.style.opacity = on && key !== activeKey ? 0.25 : 1;
+            mg.group.style.transition = "opacity 0.15s ease";
+          });
+        });
+      }
+    }
+
+    const chartPerplexity = buildTradeoffChart(document.getElementById("chart-perplexity"), {
+      data: PERPLEXITY_DATA, yMax: 50, yTicks: [0, 10, 20, 30, 40, 50], valueSuffix: "%",
+    });
+    const chartRecall = buildTradeoffChart(document.getElementById("chart-recall"), {
+      data: RECALL_DATA, yMax: 100, yTicks: [0, 25, 50, 75, 100], valueSuffix: "%",
+    });
+    buildLegend(document.getElementById("chart-legend"), [chartPerplexity, chartRecall]);
+  </script>
+</body>
+</html>

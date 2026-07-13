@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>About — kv/cache</title>
+  <meta name="description" content="Why this site exists and how it relates to NVIDIA's kvpress library." />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="index.html">Home</a>
+          <a href="basics.html">Basics</a>
+          <a href="catalogue/index.html">Catalogue</a>
+          <a href="concepts/index.html">Concepts</a>
+          <a href="about.html" class="active">About</a>
+          <a href="contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <h1>About</h1>
+      <p class="lede">
+        I built kv/cache while doing my own research into KV cache compression.
+        The papers and source code are all out there, but I found the intuition
+        easier to build by watching a small set of tokens get evicted in front
+        of me than by reading a scoring formula on its own. This is the resource
+        I wish I'd had, made public in case it's useful to someone else working
+        through the same material.
+      </p>
+
+      <h2>Relationship to kvpress</h2>
+      <p>
+        The catalogue is a companion to
+        <a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA's kvpress</a>,
+        an open-source (Apache-2.0) library that implements 40+ KV cache
+        compression methods behind one API for Hugging Face Transformers models.
+        The scoring logic on each catalogue page is written to match kvpress's
+        real implementation, and every page links to the exact source file it's
+        based on.
+      </p>
+      <p>
+        This site is independent and unofficial — it is not affiliated with,
+        endorsed by, or reviewed by NVIDIA. If something here misrepresents how
+        a method actually works, that's my error, not theirs; <a href="contact.html">let me know</a>.
+      </p>
+
+      <h2>Why these methods, and why in this order</h2>
+      <p>
+        kvpress groups its presses into a few conceptual families: rule-based
+        eviction by position, scoring by observed or predicted attention,
+        norm-based scoring, layer-wise budget allocation, dimension pruning,
+        quantization, and low-rank/merging. The catalogue currently covers
+        eight methods spanning most of those families — StreamingLLM, H2O,
+        and SnapKV were the first stop because they're the most-cited starting
+        points in the compression literature, and the rest were added to show
+        how differently the other families approach the same problem.
+        Merging/low-rank methods (e.g. CaM, KVzip) aren't covered yet.
+      </p>
+
+      <h2>Why some things aren't in the catalogue</h2>
+      <p>
+        Everything in the catalogue is a kvpress "press" — something applied
+        to an already-trained model at inference time. Some of the field's
+        most important ideas for shrinking a KV cache don't fit that
+        description: they're decided when a model is <em>trained</em>, not
+        when it's served (grouped/multi-query attention, DeepSeek's latent
+        attention), or they're not compression at all (how a serving system
+        like vLLM allocates cache memory, how anyone measures whether a
+        compression method actually held up). Mixing those into the catalogue
+        would misrepresent kvpress, so they live in a separate
+        <a href="concepts/index.html">Concepts</a> section instead.
+      </p>
+
+      <h2>A note on the demos</h2>
+      <p>
+        The interactive sandboxes run entirely in your browser — nothing is
+        sent to a server, and no model is actually doing inference. Where a
+        method's scoring depends on real attention weights (H2O, SnapKV), the
+        demo uses a small simulated score generator that mirrors the shape of
+        real attention distributions, so you can see the algorithm's logic
+        clearly without needing to load an actual model. That's flagged on
+        each page.
+      </p>
+
+      <h2>Built with</h2>
+      <p class="muted" style="font-size:13.5px;">
+        Plain HTML, CSS, and vanilla JavaScript — no framework, no build step,
+        no server. Hosted for free on GitHub Pages.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+</body>
+</html>

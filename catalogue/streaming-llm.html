@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StreamingLLM — kv/cache</title>
+  <meta name="description" content="Sink tokens plus a sliding window: the simplest KV cache compression method, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / position-based</p>
+      <h1>StreamingLLM</h1>
+      <p class="lede">
+        Keep the first few tokens forever, keep a sliding window of the most
+        recent tokens, and drop everything in between. No attention scores,
+        no learned model — just a rule about position.
+      </p>
+
+      <h2>The attention sink</h2>
+      <p>
+        Xiao et al. noticed something odd while trying to run LLMs on
+        infinitely long streams: if you naively evict old tokens once a
+        context window fills up, quality collapses almost immediately — even
+        though those old tokens didn't seem semantically important. The cause
+        turned out to be structural, not semantic. Softmax attention forces
+        every query to distribute weight across all keys, even when nothing
+        is relevant, so models learn to dump the "leftover" attention onto a
+        few early tokens as a kind of no-op — and it's specifically the
+        <em>early</em> tokens that end up absorbing it, since causal masking
+        means they're the only positions every later token can always see.
+        Evict those <strong>sink tokens</strong> and the whole attention
+        distribution destabilizes.
+      </p>
+      <p>
+        The fix: never evict the first <code>n_sink</code> tokens (4 is
+        typically enough), no matter how long generation runs. Combine that
+        with a sliding window of recent tokens — which any autoregressive
+        model needs for local coherence — and the cache stays a fixed size
+        indefinitely.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        The double-bordered tokens at the start are the sink; everything else
+        is kept only if it falls inside the trailing window.
+      </p>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        StreamingLLM is nearly free to run — there's no scoring pass, so it
+        adds no compute overhead, and it's a natural fit for streaming
+        or chat workloads with effectively unbounded length. The tradeoff is
+        exactly what you'd expect from a position-only rule: it has no idea
+        what's in the middle of the context. A critical fact stated once,
+        early in a long document, is gone the moment it scrolls out of the
+        window — sink tokens or not. It's a strong default, not a general
+        solution to "what matters."
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        This demo's <code>compute()</code> mirrors kvpress's
+        <code>StreamingLLMPress.score()</code> almost exactly: keep
+        <code>n_sink</code>, mask everything before the trailing window to
+        zero. kvpress's own docstring notes that this scoring step alone
+        doesn't fully reproduce the paper — surviving tokens still carry
+        their original RoPE positions with a gap where the evicted middle
+        used to be, so matching the paper exactly means pairing it with the
+        <code>KeyRerotationPress</code> wrapper, which re-rotates the kept
+        keys onto contiguous positions after pruning. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/streaming_llm_press.py" target="_blank" rel="noopener">streaming_llm_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2309.17453" target="_blank" rel="noopener">Xiao et al., "Efficient Streaming Language Models with Attention Sinks," 2023</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeStreamingLLM(tokens, params) {
+      const N = tokens.length;
+      const nSink = Math.min(Math.round(params.nSink), N);
+      const targetKeep = Math.max(nSink, Math.round(N * (1 - params.ratio)));
+      const windowSize = Math.max(0, targetKeep - nSink);
+      const kept = new Set();
+      const tags = new Map();
+      for (let i = 0; i < nSink; i++) {
+        kept.add(i);
+        tags.set(i, ["sink"]);
+      }
+      for (let i = Math.max(nSink, N - windowSize); i < N; i++) kept.add(i);
+      const scores = tokens.map((_, i) => (kept.has(i) ? 1 : 0));
+      return { kept, scores, tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "StreamingLLM — sink + sliding window",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "nSink", label: "sink tokens", min: 0, max: 8, step: 1, default: 4 },
+      ],
+      compute: computeStreamingLLM,
+    });
+  </script>
+</body>
+</html>

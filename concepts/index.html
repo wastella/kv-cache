@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Concepts — kv/cache</title>
+  <meta name="description" content="Architecture-level and systems-level ways the field shrinks or manages the KV cache, beyond kvpress's inference-time presses." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="../catalogue/index.html">Catalogue</a>
+          <a href="index.html" class="active">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker">beyond the catalogue</p>
+      <h1>Concepts</h1>
+      <p class="lede">
+        Everything in the <a href="../catalogue/index.html">catalogue</a> is an
+        inference-time "press" from kvpress — something you bolt onto an
+        already-trained model. The ideas here are different in kind: some are
+        decided when a model is <em>trained</em>, not when it's served, and
+        some aren't compression at all, but the systems and evaluation context
+        that explains why the catalogue matters and how you'd know if any of
+        it actually worked.
+      </p>
+
+      <ul class="rows">
+        <li>
+          <a class="row-link" href="gqa-mqa.html">
+            <div class="row-top">
+              <span class="row-title">GQA / MQA — Grouped/Multi-Query Attention</span>
+              <span class="row-tag">architecture-level</span>
+            </div>
+            <div class="row-desc">Share key/value heads across multiple query heads so the cache is smaller by construction — baked in at training time, not adjustable afterward.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="mla.html">
+            <div class="row-top">
+              <span class="row-title">MLA — Multi-Head Latent Attention</span>
+              <span class="row-tag">architecture-level</span>
+            </div>
+            <div class="row-desc">Compress each token's keys and values into one small shared latent vector, reconstructed on the fly — DeepSeek's approach to a smaller cache without dropping heads.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="paged-attention.html">
+            <div class="row-top">
+              <span class="row-title">PagedAttention</span>
+              <span class="row-tag">systems</span>
+            </div>
+            <div class="row-desc">Stop pre-allocating one giant contiguous buffer per sequence — allocate the cache in fixed-size pages instead, like an OS's virtual memory.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="evaluation.html">
+            <div class="row-top">
+              <span class="row-title">Evaluating compression</span>
+              <span class="row-tag">methodology</span>
+            </div>
+            <div class="row-desc">Removing half the cache always saves memory. Whether it's safe depends entirely on how you measure quality afterward.</div>
+          </a>
+        </li>
+      </ul>
+
+      <div class="note">
+        <strong>Different axis, same goal.</strong> The catalogue asks "which
+        tokens survive." These pages ask "what else determines how big the
+        cache is in the first place" and "how do we know any of this is safe."
+      </div>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+</body>
+</html>

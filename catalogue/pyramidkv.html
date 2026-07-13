@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PyramidKV — kv/cache</title>
+  <meta name="description" content="Give early transformer layers a bigger cache budget than late ones, instead of one flat ratio for every layer: PyramidKV, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / layer-wise</p>
+      <h1>PyramidKV</h1>
+      <p class="lede">
+        Every method so far answers "which tokens matter?" and applies that
+        same answer to every layer of the model. PyramidKV asks a different
+        question: how much cache budget does each layer even need? — and
+        gives early layers more room than late ones.
+      </p>
+
+      <h2>Information funnels as it goes up</h2>
+      <p>
+        Cai et al. traced how attention actually spreads across layers in a
+        decoder-only transformer and found a consistent shape to it: in
+        early layers, attention is broad — a token ends up attending fairly
+        evenly across much of the context. By the later layers, attention
+        narrows sharply, concentrating on a small set of tokens the model
+        has already decided matter (often the same handful across many
+        later layers). They call this <strong>pyramidal information
+        funneling</strong> — wide at the base, narrow at the top.
+      </p>
+      <p>
+        If later layers only meaningfully attend to a handful of tokens
+        anyway, giving them the same cache budget as early layers is wasted
+        space. PyramidKV allocates a shrinking budget per layer — derived
+        from a target compression ratio, a small fixed window for the most
+        recent tokens, and a <code>beta</code> parameter controlling how
+        steep the pyramid is — instead of one flat ratio everywhere. It
+        reuses SnapKV's observation-window scoring to decide
+        <em>which</em> tokens fill each layer's budget; what it changes is
+        <em>how many</em> slots each layer gets, based purely on depth.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        This isn't a token grid like the other pages — PyramidKV doesn't
+        change which tokens are picked, it changes how large each layer's
+        budget is. The chart below reproduces kvpress's actual
+        <code>get_layer_budget()</code> formula against our 29-token sample
+        sentence, across 12 simulated transformer layers.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Each bar is one layer's kept-token budget out of 29. Push
+        <code>beta</code> toward 1 and the pyramid flattens out — every
+        layer gets the same budget, the gentlest possible shape. Raise it
+        and the gap between the earliest and latest layer widens.
+      </p>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because the axis being compressed here (how much budget each layer
+        gets) is orthogonal to the axis every other method in this catalogue
+        compresses (which tokens survive), PyramidKV composes naturally with
+        per-token scoring — which is exactly how kvpress implements it, as a
+        subclass of <code>SnapKVPress</code> that overrides only the budget
+        calculation. The gain is real: by construction, the total budget
+        summed across every layer works out to roughly what flat SnapKV
+        would use at the same compression ratio — PyramidKV isn't shrinking
+        the cache any further, it's redistributing that same total so
+        layers that don't need the room lose it and layers that do keep it,
+        buying back accuracy a flat split leaves on the table. The
+        tradeoff is that the pyramid shape is a global hyperparameter tuned
+        somewhat empirically rather than derived per-model, so a poor
+        <code>beta</code> or window size for a given architecture can
+        under- or over-allocate layers relative to what they actually need
+        — and near the extremes of the compression-ratio range (very light
+        compression or very aggressive) the shape constraints can't be
+        satisfied at all, in which case it silently falls back to a flat,
+        SnapKV-style budget. PyramidKV also still inherits whatever
+        weaknesses its underlying token-scoring method has, since it isn't
+        changing which tokens are chosen, only how many.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>PyramidKVPress</code>, a subclass
+        of <code>SnapKVPress</code> whose <code>get_layer_budget()</code>
+        computes a shrinking per-layer capacity from
+        <code>compression_ratio</code>, <code>window_size</code>, and
+        <code>beta</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/pyramidkv_press.py" target="_blank" rel="noopener">pyramidkv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2406.02069" target="_blank" rel="noopener">Cai, Zhang, Gao, Liu, Li, Liu, Lu, Xiong, Dong, Hu, Xiao, "PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const PYRAMID_LAYERS = 12;
+
+    // Python's round() is round-half-to-even, not round-half-up like
+    // JS's Math.round(). get_layer_budget() calls Python's round() on
+    // every layer, so matching it exactly (not just "close enough")
+    // requires the same tie-breaking rule — otherwise budgets can be off
+    // by one right at the boundary cases where the formula lands on a
+    // clean .5.
+    function pyRound(x) {
+      const floor = Math.floor(x);
+      const diff = x - floor;
+      if (diff < 0.5) return floor;
+      if (diff > 0.5) return floor + 1;
+      return floor % 2 === 0 ? floor : floor + 1;
+    }
+
+    // Mirrors PyramidKVPress.get_layer_budget() exactly, with q_len fixed
+    // to the sample sentence's token count.
+    function pyramidLayerBudgets(qLen, ratio, windowSize, beta) {
+      const maxCapacityPrompt = windowSize + qLen * (1 - ratio);
+      let minNum = (maxCapacityPrompt - windowSize) / beta;
+      let maxNum = (maxCapacityPrompt - windowSize) * 2 - minNum;
+
+      if (maxNum >= qLen - windowSize) {
+        maxNum = qLen - windowSize;
+        minNum = (maxCapacityPrompt - windowSize) * 2 - maxNum;
+      }
+
+      const valid = qLen >= maxNum && maxNum >= minNum && minNum >= windowSize;
+      if (!valid) {
+        // Real PyramidKV falls back to a flat SnapKV-style budget here too.
+        const flat = Math.max(0, Math.min(qLen, pyRound(qLen * (1 - ratio))));
+        return { budgets: new Array(PYRAMID_LAYERS).fill(flat), fellBack: true };
+      }
+
+      const steps = (maxNum - minNum) / (PYRAMID_LAYERS - 1);
+      const budgets = [];
+      for (let l = 0; l < PYRAMID_LAYERS; l++) {
+        budgets.push(Math.max(0, Math.min(qLen, pyRound(maxNum - l * steps))));
+      }
+      return { budgets, fellBack: false };
+    }
+
+    function createPyramidDemo({ root, tokens }) {
+      const qLen = tokens.length;
+      const params = { ratio: 0.5, windowSize: 4, beta: 20 };
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("PyramidKV — per-layer cache budget out of " + qLen)]));
+
+      const fallbackNote = el("p", {
+        class: "muted",
+        style: "font-size:12.5px;margin:-6px 0 14px;display:none;",
+      }, [document.createTextNode(
+        "These settings can't satisfy the pyramid shape (window_size ≤ min ≤ max ≤ q_len), so it falls back to a flat per-layer budget — the same thing the real press does."
+      )]);
+      root.appendChild(fallbackNote);
+
+      const chart = el("div", { class: "layer-chart" });
+      root.appendChild(chart);
+
+      const rows = [];
+      for (let l = 0; l < PYRAMID_LAYERS; l++) {
+        const fill = el("div", { class: "layer-bar-fill" });
+        const track = el("div", { class: "layer-bar-track" }, [fill]);
+        const value = el("div", { class: "layer-value" }, [document.createTextNode("—")]);
+        const row = el("div", { class: "layer-row" }, [
+          el("div", { class: "layer-label" }, [document.createTextNode("layer " + l)]),
+          track,
+          value,
+        ]);
+        chart.appendChild(row);
+        rows.push({ fill, value });
+      }
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const controls = [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "windowSize", label: "window size", min: 1, max: 10, step: 1, default: 4 },
+        { key: "beta", label: "beta (pyramid steepness)", min: 1, max: 40, step: 1, default: 20 },
+      ];
+      controls.forEach((c) => {
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(String(c.default))]);
+        const labelRow = el("label", {}, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = c.format ? c.format(v) : String(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statFirst = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("layer 0 budget")]),
+      ]);
+      const statLast = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("layer 11 budget")]),
+      ]);
+      const statAvg = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("avg. cache size")]),
+      ]);
+      statsWrap.appendChild(statFirst);
+      statsWrap.appendChild(statLast);
+      statsWrap.appendChild(statAvg);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const { budgets, fellBack } = pyramidLayerBudgets(qLen, params.ratio, params.windowSize, params.beta);
+        fallbackNote.style.display = fellBack ? "block" : "none";
+        budgets.forEach((b, l) => {
+          const pct = Math.round((b / qLen) * 100);
+          rows[l].fill.style.width = pct + "%";
+          rows[l].value.textContent = `${b} / ${qLen}`;
+        });
+        statFirst.firstChild.textContent = String(budgets[0]);
+        statLast.firstChild.textContent = String(budgets[budgets.length - 1]);
+        const avg = budgets.reduce((a, b) => a + b, 0) / budgets.length;
+        statAvg.firstChild.textContent = Math.round((avg / qLen) * 100) + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createPyramidDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Catalogue — kv/cache</title>
+  <meta name="description" content="Interactive walkthroughs of KV cache compression methods, ported from NVIDIA's kvpress." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker">catalogue</p>
+      <h1>Compression methods</h1>
+      <p class="lede">
+        Ported from <a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA's kvpress</a>,
+        which implements 40+ of these behind a single API. Each page here
+        explains one method's intuition, shows the real scoring logic it's
+        built on, and lets you run it against the same sample sentence so you
+        can compare methods directly.
+      </p>
+
+      <ul class="rows">
+        <li>
+          <a class="row-link" href="streaming-llm.html">
+            <div class="row-top">
+              <span class="row-title">StreamingLLM</span>
+              <span class="row-tag">position-based</span>
+            </div>
+            <div class="row-desc">Keep a handful of "sink" tokens plus a sliding recent window. No content scoring — pure position rule.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="h2o.html">
+            <div class="row-top">
+              <span class="row-title">H2O — Heavy-Hitter Oracle</span>
+              <span class="row-tag">attention-based</span>
+            </div>
+            <div class="row-desc">Track cumulative attention per token during generation; a small set of "heavy hitters" earns most of it — keep those.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="snapkv.html">
+            <div class="row-top">
+              <span class="row-title">SnapKV</span>
+              <span class="row-tag">prediction-based</span>
+            </div>
+            <div class="row-desc">Use attention from the last few prompt tokens to predict which earlier tokens will matter, and compress before generation even starts.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="knorm.html">
+            <div class="row-top">
+              <span class="row-title">Knorm</span>
+              <span class="row-tag">norm-based</span>
+            </div>
+            <div class="row-desc">Score cached keys by nothing but their own L2 norm — no attention weights needed at all, the cheapest content-aware method here.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="pyramidkv.html">
+            <div class="row-top">
+              <span class="row-title">PyramidKV</span>
+              <span class="row-tag">layer-wise</span>
+            </div>
+            <div class="row-desc">Give early layers a bigger cache budget than late ones instead of one flat ratio everywhere — a different axis of compression entirely.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="tova.html">
+            <div class="row-top">
+              <span class="row-title">TOVA — Token Omission Via Attention</span>
+              <span class="row-tag">attention-based</span>
+            </div>
+            <div class="row-desc">Score tokens from only the current decoding step's attention, recomputed fresh every step — simpler state than H2O, more volatile.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="think.html">
+            <div class="row-top">
+              <span class="row-title">ThinK</span>
+              <span class="row-tag">dimension-pruning</span>
+            </div>
+            <div class="row-desc">Prune the least useful channels inside each kept key vector instead of dropping whole tokens — shrinks vectors, not the sequence.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="quantized-cache.html">
+            <div class="row-top">
+              <span class="row-title">Quantized KV cache</span>
+              <span class="row-tag">quantization</span>
+            </div>
+            <div class="row-desc">Keep every token, but store each one in fewer bits. Stacks with any eviction method above rather than competing with it.</div>
+          </a>
+        </li>
+      </ul>
+
+      <div class="note">
+        <strong>More on the way.</strong> This covers 8 of kvpress's 40+ presses.
+        Still missing: merging/low-rank methods (e.g. CaM, KVzip), composed
+        eviction+quantization presets, and a few other scoring families —
+        <a href="../contact.html">let me know</a> which you'd want to see next.
+      </div>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+</body>
+</html>

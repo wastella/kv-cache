@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GQA / MQA — kv/cache</title>
+  <meta name="description" content="Share key/value heads across query heads and the cache shrinks before a single token is ever evicted: GQA and MQA, interactively explained." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="../catalogue/index.html">Catalogue</a>
+          <a href="index.html" class="active">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">concepts</a> / architecture-level</p>
+      <h1>GQA / MQA</h1>
+      <p class="lede">
+        Every page in the catalogue changes what an already-trained model
+        does — evicting tokens, quantizing numbers, shrinking per-layer
+        budgets — without touching a single weight. Grouped-Query and
+        Multi-Query Attention are decided before any of that: they change
+        how many key/value heads the model <em>has</em>, so the cache starts
+        out smaller at the very first token, before any press gets a chance
+        to compress anything.
+      </p>
+
+      <h2>Multi-head attention's hidden cost</h2>
+      <p>
+        In ordinary multi-head attention, every query head gets its own key
+        head and its own value head. A layer with 32 query heads computes
+        and caches 32 separate K vectors and 32 separate V vectors per
+        token — the cache grows linearly with <code>num_heads</code>, on top
+        of growing linearly with sequence length. Nothing about the
+        attention mechanism requires that one-to-one pairing between query
+        heads and key/value heads; it's just the default architecture
+        choice, and it's the one lever GQA and MQA reach for.
+      </p>
+
+      <h2>Two ways to break the pairing</h2>
+      <p>
+        Shazeer's observation: autoregressive decoding is usually bottlenecked
+        by memory bandwidth, not compute. Every decoding step has to reload
+        the entire key/value cache, and that cost scales with
+        how many distinct K/V vectors exist per token, not with how much
+        arithmetic the model does. <strong>Multi-Query Attention</strong>
+        (MQA) is the blunt fix: collapse every query head down to a single
+        shared K vector and a single shared V vector. Cache size drops by a
+        factor of <code>num_heads</code> — 32 heads means a 32x smaller
+        cache — at the cost of some quality, which the paper reports as
+        "much faster [decoding]... with only minor quality degradation."
+      </p>
+      <p>
+        MQA's cut is extreme enough that it starts to hurt more as models
+        get larger. Ainslie et al. proposed the interpolation:
+        <strong>Grouped-Query Attention</strong> (GQA) splits query heads
+        into <code>G</code> groups and lets every head within a group share
+        one K/V head. <code>G = 1</code> recovers MQA exactly;
+        <code>G = num_heads</code> recovers ordinary multi-head attention;
+        anything in between is a tunable knob on the memory/quality
+        tradeoff. Their paper also gave existing checkpoints a way in
+        without retraining from scratch: "uptrain" an already-pretrained
+        multi-head model into a grouped-query one using roughly
+        <strong>5% of its original pretraining compute</strong>, converting
+        by averaging each group's existing key/value heads together into
+        one. The result they report: "quality close to multi-head attention
+        with comparable speed to multi-query attention."
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        8 illustrative query heads, grouped down to however many key/value
+        heads the slider allows. Drag it to 1 and every query head shares
+        one K/V head — MQA. Drag it to 8 and every query head gets its own —
+        full MHA. At 1 shared head, this demo's 8:1 ratio matches Llama 2
+        and Llama 3's 70B models exactly: 64 query heads, 8 key/value heads.
+      </p>
+
+      <h2>A knob you can't turn at inference time</h2>
+      <p>
+        A press like SnapKV or StreamingLLM runs against whatever cache a
+        model produces, on any model, at request time — you can turn the
+        compression ratio up or down per call. GQA and MQA don't work that
+        way: the number of key/value heads is baked into the model's
+        weights, chosen (or converted into, via uptraining) before it's
+        ever served. You cannot point a GQA-style press at a plain MHA
+        checkpoint and get this saving for free; the model has to have been
+        built, or converted, with fewer K/V heads in the first place. What
+        the catalogue's presses <em>can</em> do is stack on top of it — a
+        press evicting half the cache of a GQA model is still evicting half
+        of a cache that started out several times smaller than an MHA
+        model's would have.
+      </p>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        GQA in particular has become close to a default choice for
+        production-serving-oriented open models, because the tradeoff is
+        unusually favorable: near-MHA quality, a cache smaller by whatever
+        factor the group count buys, and faster decoding as a direct
+        consequence of moving less memory per step. MQA's more extreme cut
+        still shows up where memory bandwidth matters more than the last bit
+        of quality. The real limitation is inflexibility: the group count is
+        a single number chosen once for the whole model, not something that
+        can be dialed differently per request, per layer's actual need
+        (that's closer to what PyramidKV does, on the catalogue side), or
+        adjusted after the fact if it turns out to be too aggressive for
+        some downstream task.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        Original papers: <a href="https://arxiv.org/abs/1911.02150" target="_blank" rel="noopener">Shazeer, "Fast Transformer Decoding: One Write-Head is All You Need," 2019</a>
+        (MQA) and
+        <a href="https://arxiv.org/abs/2305.13245" target="_blank" rel="noopener">Ainslie, Lee-Thorp, de Jong, Zemlyanskiy, Lebrón, Sanghai, "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints," 2023</a>.
+        This is production technology, not a research curiosity — you can
+        read the head counts directly out of released model configs:
+        Llama 2 70B and Llama 3 70B both use 64 query heads with 8
+        key/value heads (<code>num_attention_heads: 64</code>,
+        <code>num_key_value_heads: 8</code>), and Mistral 7B uses 32 query
+        heads with 8 key/value heads. See
+        <a href="https://huggingface.co/meta-llama/Llama-2-70b-hf/blob/main/config.json" target="_blank" rel="noopener">Llama 2 70B's config.json</a>,
+        <a href="https://huggingface.co/meta-llama/Meta-Llama-3-70B/blob/main/config.json" target="_blank" rel="noopener">Llama 3 70B's config.json</a>, and
+        <a href="https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json" target="_blank" rel="noopener">Mistral 7B's config.json</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const GQA_QUERY_HEADS = 8;
+    const GQA_GROUP_OPTIONS = [1, 2, 4, 8];
+
+    function gqaHeadBox(label, opts) {
+      opts = opts || {};
+      const size = opts.size || 30;
+      const bold = !!opts.bold;
+      const muted = !!opts.muted;
+      const style = [
+        "width:" + size + "px",
+        "height:" + size + "px",
+        "display:flex",
+        "align-items:center",
+        "justify-content:center",
+        "font-size:10.5px",
+        "border-radius:3px",
+        "flex-shrink:0",
+        "border:" + (bold ? "2px" : "1px") + " solid " + (muted ? "#ddd9cc" : "#17160f"),
+        "background:" + (muted ? "rgba(23,22,15,0.05)" : "#fff"),
+        "color:" + (muted ? "#726f63" : "#17160f"),
+      ].join(";");
+      return el("div", { style: style }, [document.createTextNode(label)]);
+    }
+
+    function createGQADemo({ root }) {
+      const params = { groupIdx: 1 }; // default: 2 shared kv heads
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("GQA / MQA — query heads sharing key/value heads")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("key/value head — stored in the cache")]));
+      const mutedSwatch = el("span", {
+        style: "width:10px;height:10px;border:1px solid #ddd9cc;border-radius:2px;display:inline-block;background:rgba(23,22,15,0.05);",
+      });
+      legend.appendChild(el("span", {}, [mutedSwatch, document.createTextNode("query head — recomputed each step, nothing of its own is cached")]));
+      root.appendChild(legend);
+
+      const groupsWrap = el("div", { style: "display:flex;justify-content:center;gap:22px;flex-wrap:wrap;margin:20px 0 8px;min-height:110px;" });
+      root.appendChild(groupsWrap);
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const valSpan = el("span", { class: "val" }, [document.createTextNode("")]);
+      const labelRow = el("label", {}, [document.createTextNode("shared key/value heads "), valSpan]);
+      const input = el("input", {
+        type: "range",
+        min: 0,
+        max: GQA_GROUP_OPTIONS.length - 1,
+        step: 1,
+        value: params.groupIdx,
+      });
+      input.addEventListener("input", () => {
+        params.groupIdx = parseInt(input.value, 10);
+        render();
+      });
+      controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statHeads = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("kv heads")]),
+      ]);
+      const statRatioStat = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("query : kv ratio")]),
+      ]);
+      const statCache = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("cache size vs full MHA")]),
+      ]);
+      statsWrap.appendChild(statHeads);
+      statsWrap.appendChild(statRatioStat);
+      statsWrap.appendChild(statCache);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const nGroups = GQA_GROUP_OPTIONS[params.groupIdx];
+        const perGroup = GQA_QUERY_HEADS / nGroups;
+        const suffix = nGroups === 1 ? " (MQA)" : nGroups === GQA_QUERY_HEADS ? " (full MHA)" : "";
+        valSpan.textContent = nGroups + suffix;
+
+        groupsWrap.innerHTML = "";
+        let qIndex = 1;
+        for (let g = 0; g < nGroups; g++) {
+          const qRow = el("div", { style: "display:flex;gap:4px;flex-wrap:wrap;justify-content:center;max-width:150px;" });
+          for (let i = 0; i < perGroup; i++) {
+            qRow.appendChild(gqaHeadBox("Q" + qIndex, { size: 24, muted: true }));
+            qIndex++;
+          }
+          const connector = el("div", { style: "width:1px;height:16px;background:#17160f;margin:2px auto;" });
+          const kv = gqaHeadBox("KV" + (g + 1), { size: 32, bold: true });
+          const col = el("div", { style: "display:flex;flex-direction:column;align-items:center;gap:2px;" }, [qRow, connector, kv]);
+          groupsWrap.appendChild(col);
+        }
+
+        statHeads.firstChild.textContent = String(nGroups);
+        statRatioStat.firstChild.textContent = GQA_QUERY_HEADS + ":" + nGroups;
+        const pct = Math.round((nGroups / GQA_QUERY_HEADS) * 100);
+        statCache.firstChild.textContent = pct + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createGQADemo({ root: document.getElementById("demo") });
+  </script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>What is a KV cache? — kv/cache</title>
+  <meta name="description" content="Prefill vs decode, why the KV cache grows linearly, and why that's a memory problem at long context." />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="index.html">Home</a>
+          <a href="basics.html" class="active">Basics</a>
+          <a href="catalogue/index.html">Catalogue</a>
+          <a href="concepts/index.html">Concepts</a>
+          <a href="about.html">About</a>
+          <a href="contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker">01 — basics</p>
+      <h1>What is a KV cache?</h1>
+
+      <p class="lede">
+        Short version: it's memoization for attention. Without it, generating
+        the Nth token would mean recomputing attention over all N-1 previous
+        tokens from scratch, every single step. The KV cache stores the result
+        of that work so it only has to happen once per token.
+      </p>
+
+      <h2>Where keys and values come from</h2>
+      <p>
+        Inside every attention layer, each token is projected into three
+        vectors: a <strong>query</strong>, a <strong>key</strong>, and a
+        <strong>value</strong>. Attention works out how much each token should
+        "listen" to every other token by comparing queries against keys, then
+        uses those weights to blend the values.
+      </p>
+      <p>
+        The key insight for generation: once a token has been processed, its
+        key and value vectors never change again. Its query vector was only
+        ever needed to figure out <em>its own</em> output — but its key and
+        value stick around as something every future token will need to
+        compare against. So instead of recomputing them, the model caches them.
+      </p>
+
+      <h2>Two phases</h2>
+      <p>
+        <strong>Prefill:</strong> the entire prompt is processed at once, in
+        parallel, and a key/value pair is computed and cached for every token
+        in it. This is the expensive-but-parallel step.
+      </p>
+      <p>
+        <strong>Decode:</strong> the model generates one new token at a time.
+        Each step only computes a query, key, and value for the single new
+        token, appends the new key/value to the cache, and attends over
+        everything cached so far. This is the cheap-per-step-but-sequential part.
+      </p>
+
+      <div id="growth-demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        A toy sequence: the first few steps are prefill (the whole prompt
+        lands in the cache at once), the rest is decode (one token appended
+        per step).
+      </p>
+
+      <h2>Why the cache becomes a problem</h2>
+      <p>
+        Cache size scales with <code>layers × heads × head_dim × 2 × sequence_length</code>
+        (the 2 is for storing both keys and values), multiplied again by batch
+        size. Every one of those factors is fixed by the model and your
+        workload except sequence length — which keeps growing for as long as
+        you keep generating or feeding in context.
+      </p>
+      <p>
+        Concretely: serving Llama&nbsp;3.1-70B at a 1M-token context in fp16 can
+        require on the order of 330GB just for the KV cache — more than the
+        model's own weights. That memory has to sit in GPU memory for the
+        entire lifetime of the request, and it's <em>per request</em>, so it
+        also caps how many requests you can serve at once.
+      </p>
+
+      <div class="note">
+        <strong>This is the problem KV cache compression solves.</strong>
+        Instead of keeping every token's key and value forever, compression
+        methods decide which ones can be dropped, merged, or stored more
+        cheaply — with as little damage to output quality as possible.
+        See the <a href="catalogue/index.html">catalogue</a> for how eight
+        different methods make that decision.
+      </div>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="js/sandbox.js"></script>
+  <script>
+    createGrowthDemo({ root: document.getElementById("growth-demo"), tokenCount: 40 });
+  </script>
+</body>
+</html>

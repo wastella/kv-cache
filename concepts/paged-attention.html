@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PagedAttention — kv/cache</title>
+  <meta name="description" content="vLLM's virtual-memory-inspired scheme for the KV cache: stop pre-allocating one giant contiguous buffer per sequence, allocate fixed-size pages on demand instead." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="../catalogue/index.html">Catalogue</a>
+          <a href="index.html" class="active">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">concepts</a> / systems</p>
+      <h1>PagedAttention</h1>
+      <p class="lede">
+        Every method in the <a href="../catalogue/index.html">catalogue</a>
+        decides <em>which</em> KV entries to keep. PagedAttention doesn't
+        touch that decision — it changes where the entries you've already
+        decided to keep live in GPU memory. Not compression itself, it's
+        what determines whether a compression technique's savings actually
+        turn into more sequences served, or vanish into fragmentation.
+      </p>
+
+      <h2>Reserving for the worst case</h2>
+      <p>
+        A naive serving system has to put each sequence's KV cache
+        somewhere, and the simplest place is one contiguous slab of GPU
+        memory per sequence — contiguous because the attention kernel
+        expects to walk a sequence's keys and values as a single block.
+        The problem is that a slab has to be sized before you know how long
+        generation will actually run, so it gets sized for the worst case:
+        the model's maximum context length. A request that generates 40
+        tokens still reserves room for, say, 4096 — the other 4056 slots
+        sit there empty for the lifetime of the request, unusable by any
+        other sequence even though nothing is stored in them.
+      </p>
+      <p>
+        Kwon et al. measured this waste directly in existing serving
+        systems and found <strong>60–80% of allocated KV cache memory
+        going unused</strong> — internal fragmentation from sizing every
+        request for a length it will almost never reach, plus external
+        fragmentation as slabs of different reserved sizes leave
+        unusable gaps between each other. Worse, because each sequence's
+        cache is a separate contiguous slab, there's no way to let two
+        sequences share memory even when they'd benefit from it — a
+        shared system prompt prefix, or the parallel branches of a beam
+        search, each get their own full copy.
+      </p>
+
+      <h2>Pages, not one contiguous block</h2>
+      <p>
+        PagedAttention borrows the fix straight from operating-system
+        virtual memory. Instead of one contiguous slab, a sequence's KV
+        cache is split into fixed-size <strong>blocks</strong> (kvpress and
+        the catalogue call the unit a "token"; vLLM calls it a "block" or
+        "page" — same idea, a fixed chunk of storage), each holding the
+        key and value vectors for a fixed number of positions. A per-sequence
+        <strong>block table</strong> maps logical positions — "this
+        sequence's 5th block" — to wherever that block actually lives in
+        physical GPU memory, which does not need to be next to the
+        sequence's other blocks at all. The attention kernel is rewritten
+        to read through this indirection instead of assuming a flat
+        contiguous span.
+      </p>
+      <p>
+        New blocks are allocated one at a time, only when a sequence
+        actually generates enough tokens to fill the current one, and
+        freed back to a shared pool the instant the sequence finishes.
+        Nothing is ever reserved ahead of need. vLLM reports this brings
+        fragmentation from that 60–80% figure down to
+        <strong>under 4%</strong>. The same indirection also makes
+        sharing nearly free: two sequences with an identical prompt
+        prefix can point the same logical blocks at the same physical
+        blocks, and only fork a private copy — copy-on-write, with
+        reference counting — the moment one of them actually writes
+        something different. vLLM's authors report this cuts memory
+        overhead by up to 55% for memory-heavy sampling patterns like
+        beam search.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        Two toy sequences, A and B, share a GPU with room for
+        <code>40</code> physical blocks of <code>16</code> tokens each
+        (640 tokens total). The model's maximum context length is 512
+        tokens — 32 blocks. Drag each sequence's length and watch what
+        each allocation strategy actually reserves.
+      </p>
+      <div id="demo"></div>
+      <div class="note">
+        <strong>Illustrative, not measured.</strong> The block size (16),
+        pool size (40 blocks), and max length (512) are round numbers
+        chosen to make the contrast legible, not values pulled from a
+        real deployment. The <em>shape</em> of the difference — reserve
+        the max vs. allocate on demand — is the real mechanism from the
+        paper.
+      </div>
+
+      <h2>What this buys you, and what it doesn't</h2>
+      <p>
+        PagedAttention doesn't reduce how much KV data logically exists
+        for a given sequence and compression ratio — that number is set
+        entirely by whatever's upstream of it: the model's architecture
+        (see <a href="gqa-mqa.html">GQA/MQA</a>,
+        <a href="mla.html">MLA</a>) and whichever catalogue press, if
+        any, is evicting entries. What it eliminates is the gap between
+        that logical size and the physical memory a naive system would
+        have burned reserving room for it. That's exactly why it composes
+        with everything else on this site rather than competing with it:
+        run StreamingLLM or H2O on top of a paged KV cache and you shrink
+        the logical cache further, on top of memory that was already
+        being allocated efficiently. The two savings stack.
+      </p>
+      <p>
+        The cost is indirection. Every attention computation now walks a
+        block table instead of reading a flat array, which is real
+        kernel complexity vLLM had to solve with custom CUDA — and
+        picking a good block size is its own tradeoff: too small and the
+        per-block bookkeeping overhead and kernel launch cost start to
+        matter; too large and you're back to wasting the tail end of the
+        last block per sequence (bounded internal fragmentation, but
+        never zero). None of this is visible to a user of the system —
+        it's the reason vLLM reports 2–4× the throughput of prior serving
+        systems at the same latency, serving more concurrent sequences on
+        the same GPU than a naive implementation, without changing a
+        single output token.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        vLLM is the reference implementation and the system the original
+        paper was built around. Its kernel design doc walks through block
+        size, physical block numbers, and the block-offset arithmetic the
+        attention kernel actually uses — vLLM itself now flags this doc as
+        historical, describing the original kernel rather than the current
+        code, but the block-table mechanics it explains are still the right
+        mental model:
+        <a href="https://docs.vllm.ai/en/latest/design/paged_attention.html" target="_blank" rel="noopener">docs.vllm.ai — PagedAttention kernel design</a>.
+        The block allocator itself now lives in vLLM's V1 engine, in
+        <code>KVCacheManager</code>:
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_manager.py" target="_blank" rel="noopener">vllm/v1/core/kv_cache_manager.py</a>.
+        Source: <a href="https://github.com/vllm-project/vllm" target="_blank" rel="noopener">vllm-project/vllm</a> on GitHub.
+      </p>
+
+      <h3>Further reading</h3>
+      <p>
+        Original paper:
+        <a href="https://arxiv.org/abs/2309.06180" target="_blank" rel="noopener">Kwon, Li, Zhuang, Sheng, Zheng, Yu, Gonzalez, Zhang, Stoica, "Efficient Memory Management for Large Language Model Serving with PagedAttention," SOSP 2023</a>.
+        The vLLM team's own walkthrough, with the fragmentation and
+        beam-search sharing numbers cited above:
+        <a href="https://vllm.ai/blog/2023-06-20-vllm" target="_blank" rel="noopener">"vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention"</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const BLOCK = 16;       // tokens per block
+    const MAX_LEN = 512;    // model's max context length
+    const MAX_BLOCKS = MAX_LEN / BLOCK; // 32 — what contiguous pre-allocation reserves per sequence
+    const POOL_BLOCKS = 40; // total physical blocks available on this toy GPU
+
+    function blocksFor(len) {
+      return len === 0 ? 0 : Math.ceil(len / BLOCK);
+    }
+
+    function memRow(labelText) {
+      const label = el("div", { class: "mem-row-label" }, [document.createTextNode(labelText)]);
+      const blocks = el("div", { class: "mem-blocks" });
+      const row = el("div", { class: "mem-row" }, [label, blocks]);
+      return { row, blocks };
+    }
+
+    function fillBlocks(container, n, cls) {
+      for (let i = 0; i < n; i++) {
+        container.appendChild(el("div", { class: "mem-block " + cls }));
+      }
+    }
+
+    function buildDemo(root) {
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("contiguous pre-allocation vs. paged allocation")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "mem-block used-a", style: "width:10px;height:10px;" }), document.createTextNode("used (seq A)")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "mem-block used-b", style: "width:10px;height:10px;" }), document.createTextNode("used (seq B)")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "mem-block wasted", style: "width:10px;height:10px;" }), document.createTextNode("reserved but unused")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "mem-block free", style: "width:10px;height:10px;" }), document.createTextNode("free / available")]));
+      root.appendChild(legend);
+
+      const contiguousTitle = el("div", { class: "chart-panel-title", style: "margin-top:2px;" }, [document.createTextNode("contiguous pre-allocation — reserves the max, always")]);
+      root.appendChild(contiguousTitle);
+      const rowA = memRow("sequence A");
+      const rowB = memRow("sequence B");
+      root.appendChild(rowA.row);
+      root.appendChild(rowB.row);
+
+      const overflowNote = el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0 0;" }, [document.createTextNode("")]);
+      root.appendChild(overflowNote);
+
+      const pagedTitle = el("div", { class: "chart-panel-title" }, [document.createTextNode("paged allocation — draws from a shared 40-block pool")]);
+      root.appendChild(pagedTitle);
+      const poolRow = memRow("physical pool");
+      root.appendChild(poolRow.row);
+
+      const pagedOverflowNote = el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0 0;" }, [document.createTextNode("")]);
+      root.appendChild(pagedOverflowNote);
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const params = { lenA: 96, lenB: 32 };
+      const controls = [
+        { key: "lenA", label: "sequence A length (tokens)", min: 0, max: MAX_LEN, step: BLOCK, default: params.lenA },
+        { key: "lenB", label: "sequence B length (tokens)", min: 0, max: MAX_LEN, step: BLOCK, default: params.lenB },
+      ];
+      controls.forEach((c) => {
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(String(c.default))]);
+        const labelRow = el("label", {}, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = String(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statContiguous = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("contiguous reserves")]),
+      ]);
+      const statPaged = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("paged allocates")]),
+      ]);
+      const statSaved = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("blocks saved")]),
+      ]);
+      statsWrap.appendChild(statContiguous);
+      statsWrap.appendChild(statPaged);
+      statsWrap.appendChild(statSaved);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const usedA = blocksFor(params.lenA);
+        const usedB = blocksFor(params.lenB);
+
+        rowA.blocks.innerHTML = "";
+        fillBlocks(rowA.blocks, usedA, "used-a");
+        fillBlocks(rowA.blocks, MAX_BLOCKS - usedA, "wasted");
+
+        rowB.blocks.innerHTML = "";
+        fillBlocks(rowB.blocks, usedB, "used-b");
+        fillBlocks(rowB.blocks, MAX_BLOCKS - usedB, "wasted");
+
+        const contiguousTotal = MAX_BLOCKS * 2;
+        if (contiguousTotal > POOL_BLOCKS) {
+          overflowNote.textContent = `Reserving the max for both sequences needs ${contiguousTotal} blocks — more than the ${POOL_BLOCKS}-block pool. A contiguous-allocation system can't even admit both of these requests, no matter how short they turn out to be.`;
+        } else {
+          overflowNote.textContent = `${contiguousTotal} of ${POOL_BLOCKS} blocks reserved, regardless of how many tokens either sequence has actually generated.`;
+        }
+
+        const pagedTotal = usedA + usedB;
+        const shownA = Math.min(usedA, POOL_BLOCKS);
+        const shownB = Math.min(usedB, POOL_BLOCKS - shownA);
+        poolRow.blocks.innerHTML = "";
+        fillBlocks(poolRow.blocks, shownA, "used-a");
+        fillBlocks(poolRow.blocks, shownB, "used-b");
+        fillBlocks(poolRow.blocks, Math.max(0, POOL_BLOCKS - shownA - shownB), "free");
+
+        if (pagedTotal > POOL_BLOCKS) {
+          pagedOverflowNote.textContent = `${pagedTotal} blocks actually needed — more than the ${POOL_BLOCKS}-block pool holds (shown maxed out above). Paged allocation gets both sequences much further than contiguous pre-allocation would, since it only ever hands out blocks that are actually in use — but the pool is still finite. Past this point the scheduler queues one of the sequences instead of admitting it; it just doesn't waste ${contiguousTotal} blocks of reservation finding that out.`;
+        } else {
+          pagedOverflowNote.textContent = `${pagedTotal} of ${POOL_BLOCKS} blocks allocated — only what's actually in use, so ${POOL_BLOCKS - pagedTotal} blocks remain free for other sequences.`;
+        }
+
+        statContiguous.firstChild.textContent = `${contiguousTotal} blocks`;
+        statPaged.firstChild.textContent = `${pagedTotal} blocks`;
+        statSaved.firstChild.textContent = `${contiguousTotal - pagedTotal} blocks`;
+      }
+
+      render();
+    }
+
+    buildDemo(document.getElementById("demo"));
+  </script>
+</body>
+</html>

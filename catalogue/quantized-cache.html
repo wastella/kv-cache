@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quantized KV cache — kv/cache</title>
+  <meta name="description" content="Keep every token, but store each one in fewer bits: KV cache quantization, interactively explained, and how it stacks with eviction methods." />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Catalogue</a>
+          <a href="../concepts/index.html">Concepts</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">catalogue</a> / quantization</p>
+      <h1>Quantized KV cache</h1>
+      <p class="lede">
+        Every method so far shrinks the cache by throwing something away —
+        tokens, or channels within a token. Quantization keeps everything
+        and shrinks it a different way: store each surviving number in
+        fewer bits.
+      </p>
+
+      <h2>The cache doesn't need full precision</h2>
+      <p>
+        Liu et al.'s KIVI studied the actual distribution of values inside a
+        running KV cache and found consistent structure worth exploiting:
+        within the key cache, outlier magnitudes cluster by
+        <strong>channel</strong> (so keys quantize better when grouped and
+        scaled per channel), while within the value cache outliers cluster
+        by <strong>token</strong> instead (so values quantize better grouped
+        per token). Respecting that asymmetry — rather than quantizing the
+        whole cache with one flat scheme — is what let KIVI push all the way
+        to 2-bit KV caches while staying close to full-precision quality on
+        models that degrade badly under naive, uniform quantization.
+      </p>
+      <p>
+        kvpress doesn't implement any of this itself — it delegates entirely
+        to Hugging Face <code>transformers</code>' <code>QuantizedCache</code>
+        (via the <code>quanto</code> or <code>hqq</code> backend), so
+        quantization is a cache object you hand to the pipeline
+        (<code>QuantizedCache(backend="quanto", nbits=4)</code>) rather than
+        a press with a <code>score()</code> method. That's a meaningfully
+        different shape from everything else in this catalogue: it's cache
+        infrastructure, applied independently of whichever token- or
+        channel-pruning press is also running. <code>transformers</code>'
+        implementation is inspired by KIVI but doesn't replicate its asymmetric axes — by
+        default it quantizes both keys and values per-channel in
+        fixed-size groups, which its own source comments describe as "in
+        contrast to what was described in the [KIVI] paper." It does keep
+        one piece of the paper's spirit: the most recent
+        <code>residual_length</code> tokens (128 by default) stay in full
+        precision, so quantization error never touches the tokens closest
+        to the current decoding step.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        No token is ever evicted by bit-width alone — the shading shows each
+        kept token's value bucketed into <code>bits</code> visual levels
+        (not 2<sup>bits</sup> — that fine a gradient is invisible at this
+        size; the "cache size vs. fp16" stat below still uses the real bit
+        counts). The eviction-ratio slider is a stand-in for
+        <em>any</em> token-eviction method elsewhere in this catalogue,
+        combined here to show that the two savings multiply.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real model or
+        real cache tensor behind this demo — the per-token "magnitude" used
+        for shading is a deterministic stand-in, and the eviction step
+        reuses a simple illustrative heuristic rather than a specific real
+        press's scoring.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because quantization operates on numeric precision rather than on
+        which tokens or channels survive, it stacks directly with every
+        other method in this catalogue — run SnapKV or H2O to decide what
+        stays, then quantize whatever's left, and the two savings multiply
+        instead of trading off against each other. It's also comparatively
+        gentle as compression goes: dropping a token can lose a specific
+        piece of information outright, while a lightly quantized value is
+        still an approximation of the original, just noisier. The costs
+        show up in throughput and precision edge cases rather than
+        architecture — dequantizing before every attention computation adds
+        latency, aggressive bit-widths (2-bit and below) start to
+        measurably hurt quality on some models and tasks the way any lossy
+        compression eventually does, and using it means one more dependency
+        (<code>optimum-quanto</code>) to install and keep working.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress documents this in its README's Quantization section,
+        delegating entirely to transformers'
+        <code>QuantizedCache</code>:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/README.md#quantization" target="_blank" rel="noopener">README.md#quantization</a>,
+        background in the
+        <a href="https://huggingface.co/blog/kv-cache-quantization" target="_blank" rel="noopener">Hugging Face KV cache quantization post</a>.
+        Representative paper:
+        <a href="https://arxiv.org/abs/2402.02750" target="_blank" rel="noopener">Liu, Yuan, Jin, Zhong, Xu, Braverman, Chen, Hu, "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const QUANT_BIT_OPTIONS = [16, 8, 4, 2];
+
+    function quantEvictedKept(tokens, evictRatio) {
+      const N = tokens.length;
+      const budget = Math.max(1, Math.round(N * (1 - evictRatio)));
+      const raw = tokens.map((tok, i) => Math.exp(-(N - 1 - i) / 14) + (seeded(tok + i) < 0.15 ? 0.6 : 0));
+      const ranked = raw.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      return new Set(ranked.slice(0, budget).map((p) => p[1]));
+    }
+
+    // Bucket count is intentionally `bits`, not 2^bits — see the note on
+    // the page. It's a legibility simplification, not the real math.
+    function quantBucketShade(tok, i, bits) {
+      const raw = seeded(tok + i + "qmag");
+      const levels = Math.max(2, bits);
+      return Math.round(raw * (levels - 1)) / (levels - 1);
+    }
+
+    function createQuantDemo({ root, tokens }) {
+      const N = tokens.length;
+      const params = { bitIdx: 2, evictRatio: 0 }; // default: 4-bit, no eviction
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("Quantized KV cache — bit-width + optional eviction")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("kept, quantized")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted" }), document.createTextNode("evicted")]));
+      root.appendChild(legend);
+
+      const grid = el("div", { class: "token-grid" });
+      root.appendChild(grid);
+      const tokenEls = tokens.map((tok) => {
+        const t = el("span", { class: "token quant" }, [document.createTextNode(tok)]);
+        grid.appendChild(t);
+        return t;
+      });
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+
+      const bitValSpan = el("span", { class: "val" }, [document.createTextNode(QUANT_BIT_OPTIONS[params.bitIdx] + "-bit")]);
+      const bitInput = el("input", { type: "range", min: 0, max: QUANT_BIT_OPTIONS.length - 1, step: 1, value: params.bitIdx });
+      bitInput.addEventListener("input", () => {
+        params.bitIdx = parseInt(bitInput.value, 10);
+        bitValSpan.textContent = QUANT_BIT_OPTIONS[params.bitIdx] + "-bit";
+        render();
+      });
+      controlsWrap.appendChild(el("div", { class: "control" }, [
+        el("label", {}, [document.createTextNode("precision "), bitValSpan]),
+        bitInput,
+      ]));
+
+      const evictValSpan = el("span", { class: "val" }, [document.createTextNode("0%")]);
+      const evictInput = el("input", { type: "range", min: 0, max: 0.85, step: 0.05, value: params.evictRatio });
+      evictInput.addEventListener("input", () => {
+        params.evictRatio = parseFloat(evictInput.value);
+        evictValSpan.textContent = Math.round(params.evictRatio * 100) + "%";
+        render();
+      });
+      controlsWrap.appendChild(el("div", { class: "control" }, [
+        el("label", {}, [document.createTextNode("combine with eviction ratio "), evictValSpan]),
+        evictInput,
+      ]));
+
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statKept = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("tokens kept")]),
+      ]);
+      const statBits = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("bits / value")]),
+      ]);
+      const statMem = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("cache size vs. fp16")]),
+      ]);
+      statsWrap.appendChild(statKept);
+      statsWrap.appendChild(statBits);
+      statsWrap.appendChild(statMem);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const bits = QUANT_BIT_OPTIONS[params.bitIdx];
+        const kept = quantEvictedKept(tokens, params.evictRatio);
+
+        tokenEls.forEach((tEl, i) => {
+          const isKept = kept.has(i);
+          tEl.classList.toggle("evicted", !isKept);
+          if (isKept) {
+            const shade = quantBucketShade(tokens[i], i, bits);
+            tEl.style.background = `rgba(23, 22, 15, ${0.06 + shade * 0.3})`;
+          } else {
+            tEl.style.background = "";
+          }
+        });
+
+        statKept.firstChild.textContent = `${kept.size} / ${N}`;
+        statBits.firstChild.textContent = `${bits}-bit`;
+        const keptFrac = kept.size / N;
+        const memPct = Math.round(keptFrac * (bits / 16) * 100);
+        statMem.firstChild.textContent = memPct + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createQuantDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>
