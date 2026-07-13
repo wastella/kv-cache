@@ -38,9 +38,13 @@ record of what was done and what's still a deliberate open item — not an activ
 7. Final integration check: every internal link/script reference across the whole site
    resolves, and every page's HTML tags are now balanced (verified programmatically).
 
+## Repo and hosting
+
+Live at git repo `wastella/kv-cache` (public), hosted on GitHub Pages at
+`https://wastella.github.io/kv-cache/`. Pushing to `main` deploys automatically.
+
 ## Deliberately not done — these are calls for the site owner, not open bugs
 
-- **Not a git repo.** `git init` + first commit hasn't happened — ask before doing this.
 - **kvpress has 40+ presses total; this catalogue covers 8**, spanning the major families
   (position, attention×2, prediction, norm, layer-wise, dimension-pruning, quantization).
   Adding more is a content decision, not a defect — see `about.html`'s "Why these methods"
