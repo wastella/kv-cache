@@ -42,10 +42,10 @@
     <main>
       <h1>About</h1>
       <p class="lede">
-        I built kv/cache while doing my own research into KV cache compression.
+        I built kv/cache while doing independent research into KV cache compression.
         The papers and source code are all out there, but I found the intuition
-        easier to build by watching a small set of tokens get evicted in front
-        of me than by reading a scoring formula on its own. This is the resource
+        easier to build by watching interactive demonstrations on small sets of tokens
+        than by reading a scoring formula on its own. This is the resource
         I wish I'd had, made public in case it's useful to someone else working
         through the same material.
       </p>
@@ -98,19 +98,17 @@
       <h2>A note on the demos</h2>
       <p>
         The interactive sandboxes run entirely in your browser — nothing is
-        sent to a server, and no model is actually doing inference. Where a
+        sent to a server, and no model runs live in your browser. Where a
         method's scoring depends on real attention weights (H2O, SnapKV), the
         demo uses a small simulated score generator that mirrors the shape of
         real attention distributions, so you can see the algorithm's logic
         clearly without needing to load an actual model. That's flagged on
-        each page.
+        each page. The one exception is <a href="basics.html">basics</a>'s
+        cache-growth demo: its Q/K/V numbers are real, pulled from an actual
+        GPT-2 (124M) forward pass computed offline (<code>tools/gen_gpt2_qkv.py</code>)
+        and shipped as static data — not simulated, but not live either.
       </p>
 
-      <h2>Built with</h2>
-      <p class="muted" style="font-size:13.5px;">
-        Plain HTML, CSS, and vanilla JavaScript — no framework, no build step,
-        no server. Hosted for free on GitHub Pages.
-      </p>
     </main>
 
     <footer class="site">

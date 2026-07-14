@@ -40,11 +40,10 @@
     </header>
 
     <main>
-      <p class="kicker">basics</p>
       <h1>What is a KV cache?</h1>
 
       <p class="lede">
-        Short version: it's memoization for attention. Without it, generating
+        In short: it's memoization for attention. Without it, generating
         the Nth token would mean recomputing attention over all N-1 previous
         tokens from scratch, every single step. The KV cache stores the result
         of that work so it only has to happen once per token.
@@ -61,29 +60,32 @@
       <p>
         The key insight for generation: once a token has been processed, its
         key and value vectors never change again. Its query vector was only
-        ever needed to figure out <em>its own</em> output — but its key and
+        ever needed to figure out <em>its own</em> output, but its key and
         value stick around as something every future token will need to
         compare against. So instead of recomputing them, the model caches them.
       </p>
 
       <h2>Two phases</h2>
       <p>
-        <strong>Prefill:</strong> the entire prompt is processed at once, in
+        <strong>Prefill:</strong> The entire prompt is processed at once, in
         parallel, and a key/value pair is computed and cached for every token
-        in it. This is the expensive-but-parallel step.
+        in it.
       </p>
       <p>
-        <strong>Decode:</strong> the model generates one new token at a time.
+        <strong>Decode:</strong> The model generates one new token at a time.
         Each step only computes a query, key, and value for the single new
         token, appends the new key/value to the cache, and attends over
-        everything cached so far. This is the cheap-per-step-but-sequential part.
+        everything cached so far.
       </p>
 
       <div id="growth-demo"></div>
       <p class="muted" style="font-size:12.5px;">
-        A toy sequence: the first few steps are prefill (the whole prompt
-        lands in the cache at once), the rest is decode (one token appended
-        per step).
+        The Q/K/V numbers here are real: pulled from an actual GPT-2 (124M)
+        forward pass over this sentence, not simulated. The first few steps
+        are prefill (the whole prompt lands in the cache at once), the rest
+        is decode (one token appended per step); click any cached token to
+        see its vectors, and switch layer/head to see they're genuinely
+        different at each one.
       </p>
 
       <h2>Why the cache becomes a problem</h2>
@@ -91,13 +93,13 @@
         Cache size scales with <code>layers × heads × head_dim × 2 × sequence_length</code>
         (the 2 is for storing both keys and values), multiplied again by batch
         size. Every one of those factors is fixed by the model and your
-        workload except sequence length — which keeps growing for as long as
+        workload except sequence length, which keeps growing for as long as
         you keep generating or feeding in context.
       </p>
       <p>
         Concretely: serving Llama&nbsp;3.1-70B at a 1M-token context in fp16 can
-        require on the order of 330GB just for the KV cache — more than the
-        model's own weights. That memory has to sit in GPU memory for the
+        require on the order of 330GB just for the KV cache, which is more than the
+        model's own weights. That has to sit in GPU memory for the
         entire lifetime of the request, and it's <em>per request</em>, so it
         also caps how many requests you can serve at once.
       </p>
@@ -106,9 +108,7 @@
         <strong>This is the problem KV cache compression solves.</strong>
         Instead of keeping every token's key and value forever, compression
         methods decide which ones can be dropped, merged, or stored more
-        cheaply — with as little damage to output quality as possible.
-        See <a href="compression/index.html">compression</a> for how eight
-        different methods make that decision.
+        cheaply with as little damage to output quality as possible.
       </div>
     </main>
 
@@ -118,9 +118,10 @@
     </footer>
   </div>
 
+  <script src="js/gpt2-basics-data.js"></script>
   <script src="js/sandbox.js"></script>
   <script>
-    createGrowthDemo({ root: document.getElementById("growth-demo"), tokenCount: 40 });
+    createGrowthDemo({ root: document.getElementById("growth-demo") });
   </script>
 </body>
 </html>
