@@ -3,24 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Catalogue — kv/cache</title>
-  <meta name="description" content="Interactive walkthroughs of KV cache compression methods, ported from NVIDIA's kvpress." />
+  <title>Compression — kv/cache</title>
+  <meta name="description" content="How the KV cache gets smaller — at training time, at inference time, and in how it's served — plus how to tell if it worked." />
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
-  <link rel="canonical" href="https://wastella.github.io/kv-cache/catalogue/index.html" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/index.html" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="kv/cache" />
-  <meta property="og:url" content="https://wastella.github.io/kv-cache/catalogue/index.html" />
-  <meta property="og:title" content="Catalogue — kv/cache" />
-  <meta property="og:description" content="Interactive walkthroughs of KV cache compression methods, ported from NVIDIA's kvpress." />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/index.html" />
+  <meta property="og:title" content="Compression — kv/cache" />
+  <meta property="og:description" content="How the KV cache gets smaller — at training time, at inference time, and in how it's served — plus how to tell if it worked." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Catalogue — kv/cache" />
-  <meta name="twitter:description" content="Interactive walkthroughs of KV cache compression methods, ported from NVIDIA's kvpress." />
+  <meta name="twitter:title" content="Compression — kv/cache" />
+  <meta name="twitter:description" content="How the KV cache gets smaller — at training time, at inference time, and in how it's served — plus how to tell if it worked." />
   <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <link rel="stylesheet" href="../css/style.css" />
 </head>
@@ -32,8 +32,7 @@
         <nav class="primary">
           <a href="../index.html">Home</a>
           <a href="../basics.html">Basics</a>
-          <a href="index.html" class="active">Catalogue</a>
-          <a href="../concepts/index.html">Concepts</a>
+          <a href="index.html" class="active">Compression</a>
           <a href="../about.html">About</a>
           <a href="../contact.html">Contact</a>
         </nav>
@@ -41,14 +40,25 @@
     </header>
 
     <main>
-      <p class="kicker">catalogue</p>
+      <p class="kicker">compression</p>
       <h1>Compression methods</h1>
       <p class="lede">
+        The KV cache gets smaller at a few different points in a model's
+        life: some choices are baked in when it's <em>trained</em>, some are
+        bolted on at <em>inference</em> time, and some come from how a
+        serving system manages memory. Different stage, same goal — this
+        page groups all of it together, plus how you'd know any of it
+        actually worked.
+      </p>
+
+      <h2>Inference-time methods</h2>
+      <p class="muted" style="font-size:13.5px;max-width:56ch;">
         Ported from <a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA's kvpress</a>,
         which implements 40+ of these behind a single API. Each page here
         explains one method's intuition, shows the real scoring logic it's
         built on, and lets you run it against the same sample sentence so you
-        can compare methods directly.
+        can compare methods directly. These are all "presses" — bolted onto
+        an already-trained model, not adjustable at any other stage.
       </p>
 
       <ul class="rows">
@@ -126,10 +136,75 @@
         </li>
       </ul>
 
+      <h2>Architecture-level</h2>
+      <p class="muted" style="font-size:13.5px;max-width:56ch;">
+        Decided when the model is trained, not adjustable afterward — the
+        cache is smaller by construction rather than by a scoring rule
+        applied later.
+      </p>
+
+      <ul class="rows">
+        <li>
+          <a class="row-link" href="gqa-mqa.html">
+            <div class="row-top">
+              <span class="row-title">GQA / MQA — Grouped/Multi-Query Attention</span>
+              <span class="row-tag">architecture-level</span>
+            </div>
+            <div class="row-desc">Share key/value heads across multiple query heads so the cache is smaller by construction — baked in at training time, not adjustable afterward.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="mla.html">
+            <div class="row-top">
+              <span class="row-title">MLA — Multi-Head Latent Attention</span>
+              <span class="row-tag">architecture-level</span>
+            </div>
+            <div class="row-desc">Compress each token's keys and values into one small shared latent vector, reconstructed on the fly — DeepSeek's approach to a smaller cache without dropping heads.</div>
+          </a>
+        </li>
+      </ul>
+
+      <h2>Systems</h2>
+      <p class="muted" style="font-size:13.5px;max-width:56ch;">
+        How a serving system allocates and manages cache memory — orthogonal
+        to which tokens or bits get kept.
+      </p>
+
+      <ul class="rows">
+        <li>
+          <a class="row-link" href="paged-attention.html">
+            <div class="row-top">
+              <span class="row-title">PagedAttention</span>
+              <span class="row-tag">systems</span>
+            </div>
+            <div class="row-desc">Stop pre-allocating one giant contiguous buffer per sequence — allocate the cache in fixed-size pages instead, like an OS's virtual memory.</div>
+          </a>
+        </li>
+      </ul>
+
+      <h2>Evaluation</h2>
+      <p class="muted" style="font-size:13.5px;max-width:56ch;">
+        Removing part of the cache always saves memory. Whether it's safe
+        depends entirely on how you measure quality afterward.
+      </p>
+
+      <ul class="rows">
+        <li>
+          <a class="row-link" href="evaluation.html">
+            <div class="row-top">
+              <span class="row-title">Evaluating compression</span>
+              <span class="row-tag">methodology</span>
+            </div>
+            <div class="row-desc">Removing half the cache always saves memory. Whether it's safe depends entirely on how you measure quality afterward.</div>
+          </a>
+        </li>
+      </ul>
+
       <div class="note">
-        <strong>More on the way.</strong> This covers 8 of kvpress's 40+ presses.
-        Still missing: merging/low-rank methods (e.g. CaM, KVzip), composed
-        eviction+quantization presets, and a few other scoring families —
+        <strong>More methods are coming.</strong> The inference-time section
+        covers 8 of kvpress's 40+ presses. Still missing: merging/low-rank
+        methods (e.g. CaM, KVzip), composed eviction+quantization presets,
+        and a few other scoring families —
         <a href="../contact.html">let me know</a> which you'd want to see next.
       </div>
     </main>

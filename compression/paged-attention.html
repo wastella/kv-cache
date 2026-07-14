@@ -8,10 +8,10 @@
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
-  <link rel="canonical" href="https://wastella.github.io/kv-cache/concepts/paged-attention.html" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/paged-attention.html" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="kv/cache" />
-  <meta property="og:url" content="https://wastella.github.io/kv-cache/concepts/paged-attention.html" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/paged-attention.html" />
   <meta property="og:title" content="PagedAttention — kv/cache" />
   <meta property="og:description" content="vLLM's virtual-memory-inspired scheme for the KV cache: stop pre-allocating one giant contiguous buffer per sequence, allocate fixed-size pages on demand instead." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
@@ -32,8 +32,7 @@
         <nav class="primary">
           <a href="../index.html">Home</a>
           <a href="../basics.html">Basics</a>
-          <a href="../catalogue/index.html">Catalogue</a>
-          <a href="index.html" class="active">Concepts</a>
+          <a href="index.html" class="active">Compression</a>
           <a href="../about.html">About</a>
           <a href="../contact.html">Contact</a>
         </nav>
@@ -41,10 +40,10 @@
     </header>
 
     <main>
-      <p class="kicker"><a href="index.html" class="quiet">concepts</a> / systems</p>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / systems</p>
       <h1>PagedAttention</h1>
       <p class="lede">
-        Every method in the <a href="../catalogue/index.html">catalogue</a>
+        Every method in the <a href="../compression/index.html">catalogue</a>
         decides <em>which</em> KV entries to keep. PagedAttention doesn't
         touch that decision — it changes where the entries you've already
         decided to keep live in GPU memory. Not compression itself, it's

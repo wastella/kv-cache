@@ -5,9 +5,12 @@ record of what was done and what's still a deliberate open item — not an activ
 
 ## What exists
 
-12 topic pages (8 `catalogue/` kvpress presses + 4 `concepts/` architecture/systems pages),
-`index.html`, `about.html`, `basics.html`, `contact.html`, shared `css/style.css` +
-`js/sandbox.js`. Full structure and design-system notes are in `README.md`.
+12 topic pages under `compression/` (8 kvpress inference-time presses + 4
+architecture/systems/evaluation pages, unified into one nav tab and index page
+with subsections — previously split across separate `catalogue/`/`concepts/`
+directories), `index.html`, `about.html`, `basics.html`, `contact.html`,
+shared `css/style.css` + `js/sandbox.js`. Full structure and design-system
+notes are in `README.md`.
 
 ## What was done this session
 
@@ -38,6 +41,17 @@ record of what was done and what's still a deliberate open item — not an activ
 7. Final integration check: every internal link/script reference across the whole site
    resolves, and every page's HTML tags are now balanced (verified programmatically).
 
+## Later session: merged catalogue/concepts into one `compression/` section
+
+The `catalogue`/`concepts` nav split read as arbitrary (site owner's call —
+both are ways to shrink the KV cache, just at different stages). Merged both
+into a single `compression/` directory and one `compression/index.html` with
+four `<h2>` subsections (inference-time, architecture-level, systems,
+evaluation) instead of two separate index pages. All 12 detail pages moved
+with `git mv` (content unchanged, only nav/breadcrumb/meta URLs updated).
+Old `catalogue/*`/`concepts/*` URLs now 404 — intentional, no redirects added
+(site owner confirmed breaking old links was fine).
+
 ## Repo and hosting
 
 Live at git repo `wastella/kv-cache` (public), hosted on GitHub Pages at
@@ -48,7 +62,7 @@ Live at git repo `wastella/kv-cache` (public), hosted on GitHub Pages at
 - **kvpress has 40+ presses total; this catalogue covers 8**, spanning the major families
   (position, attention×2, prediction, norm, layer-wise, dimension-pruning, quantization).
   Adding more is a content decision, not a defect — see `about.html`'s "Why these methods"
-  section for the current rationale, and `catalogue/index.html`'s note for what's explicitly
+  section for the current rationale, and `compression/index.html`'s note for what's explicitly
   flagged as still missing (merging/low-rank methods like CaM/KVzip).
 
 ## Conventions to preserve if extending this site later
@@ -56,7 +70,7 @@ Live at git repo `wastella/kv-cache` (public), hosted on GitHub Pages at
 - Every claim cites a primary source (arXiv ID, real repo file, real model config) — no
   invented statistics. Where a number can't be verified, say so or hedge, don't state it flatly.
 - Every simulated/illustrative demo value gets an explicit `.note` callout admitting it's
-  simulated, not measured (canonical phrasing in `catalogue/knorm.html`).
+  simulated, not measured (canonical phrasing in `compression/knorm.html`).
 - New CSS for bespoke demos goes at the end of `css/style.css` with a scoped class prefix
   (`.layer-*`, `.channel-*`, `.mem-*`, `.chart-*`) — never edit/restyle existing rules other
   pages depend on.

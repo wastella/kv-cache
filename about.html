@@ -32,8 +32,7 @@
         <nav class="primary">
           <a href="index.html">Home</a>
           <a href="basics.html">Basics</a>
-          <a href="catalogue/index.html">Catalogue</a>
-          <a href="concepts/index.html">Concepts</a>
+          <a href="compression/index.html">Compression</a>
           <a href="about.html" class="active">About</a>
           <a href="contact.html">Contact</a>
         </nav>
@@ -80,18 +79,20 @@
         Merging/low-rank methods (e.g. CaM, KVzip) aren't covered yet.
       </p>
 
-      <h2>Why some things aren't in the catalogue</h2>
+      <h2>Why compression is grouped into stages</h2>
       <p>
-        Everything in the catalogue is a kvpress "press" — something applied
-        to an already-trained model at inference time. Some of the field's
-        most important ideas for shrinking a KV cache don't fit that
-        description: they're decided when a model is <em>trained</em>, not
-        when it's served (grouped/multi-query attention, DeepSeek's latent
-        attention), or they're not compression at all (how a serving system
-        like vLLM allocates cache memory, how anyone measures whether a
-        compression method actually held up). Mixing those into the catalogue
-        would misrepresent kvpress, so they live in a separate
-        <a href="concepts/index.html">Concepts</a> section instead.
+        Most of the <a href="compression/index.html">compression</a> page is
+        kvpress "presses" — things applied to an already-trained model at
+        inference time. But shrinking a KV cache isn't only an inference-time
+        decision: some of the field's most important ideas are decided when a
+        model is <em>trained</em>, not when it's served (grouped/multi-query
+        attention, DeepSeek's latent attention), or aren't compression at all
+        in the scoring sense — how a serving system like vLLM allocates cache
+        memory, how anyone measures whether a compression method actually
+        held up. Calling all of it a "press" would misrepresent kvpress, so
+        the compression page groups these as separate subsections —
+        inference-time, architecture-level, systems, and evaluation — instead
+        of implying they're interchangeable.
       </p>
 
       <h2>A note on the demos</h2>
