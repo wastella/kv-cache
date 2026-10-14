@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SimLayerKV — kv/cache</title>
+  <meta name="description" content="Some transformer layers already behave like StreamingLLM on their own: SimLayerKV finds those 'lazy' layers per input and compresses only them, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/simlayerkv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/simlayerkv.html" />
+  <meta property="og:title" content="SimLayerKV — kv/cache" />
+  <meta property="og:description" content="Some transformer layers already behave like StreamingLLM on their own: SimLayerKV finds those 'lazy' layers per input and compresses only them, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="SimLayerKV — kv/cache" />
+  <meta name="twitter:description" content="Some transformer layers already behave like StreamingLLM on their own: SimLayerKV finds those 'lazy' layers per input and compresses only them, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / layer-wise</p>
+      <h1>SimLayerKV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> PyramidKV gives every layer a different-sized budget but still
+        decides which tokens survive the same way everywhere. SimLayerKV goes further: some
+        layers get no compression at all, and others collapse down to just a sink plus a recent
+        window, because a check run per layer, per input, finds they're barely using the rest of
+        their cache anyway.
+      </p>
+
+      <h2>Lazy layers</h2>
+      <p>
+        Zhang, Du, Du, Pang, Gao, and Lin ("SimLayerKV: A Simple Framework for Layer-Level KV
+        Cache Reduction," arXiv 2410.13846) observed that certain attention layers, for a given
+        input, consistently behave like StreamingLLM already does by design: they mostly attend
+        to a handful of initial "sink" tokens plus a nearby recent window, and barely touch
+        anything in between, for the entire length of generation. They call these <strong>lazy
+        layers</strong>. The rest of the layers keep attending broadly across the full context and
+        get left alone entirely.
+      </p>
+      <p>
+        kvpress's <code>SimLayerKVPress</code> detects laziness with a direct check: take the
+        attention the last <code>n_last</code> query tokens pay (1 token by default, kvpress fixes
+        this to match what the code comments call "SKLV-decode"), average it, and sum up how much
+        of it lands on the first <code>n_initial</code> tokens (4 by default) plus the most recent
+        <code>n_recent</code> tokens (1024 by default). If that sum exceeds <code>lazy_threshold</code>,
+        the layer is lazy for this input: keep only the initial and recent tokens, discard the
+        rest of that layer's cache. If it doesn't, keep the whole thing, no compression for that
+        layer at all.
+      </p>
+      <p>
+        Two details matter for using this in practice. First, <code>lazy_threshold</code> defaults
+        to <code>1.0</code>, which the source treats as "off": at exactly 1.0 (or on any sequence
+        shorter than <code>n_initial + n_recent + n_last</code>), no compression happens regardless
+        of what the attention check would say. Second, the right threshold is genuinely
+        model-specific, not a universal constant: kvpress's own docstring recommends 0.9 for
+        Llama3, 0.65 for Llama2, 0.8 for Mistral, and 0.85 for Qwen. Different model families turn
+        out to be lazy to different degrees, so this has to be calibrated per model, not assumed.
+        Like DMSPress, <code>compression_ratio</code> here is a read-only property computed after
+        a forward pass, not something you set.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        This is a per-layer chart, not a token grid: SimLayerKV doesn't score individual tokens at
+        all, it makes one binary decision per layer, lazy or not, and either keeps everything or
+        collapses straight to sink + recent. The real default <code>n_recent</code> is 1024,
+        which would dwarf our 29-token sample, so the slider below defaults to something scaled
+        down enough to actually show the mechanism at this size.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Each bar is one (simulated) layer's kept-token count out of 29. A full bar means that
+        layer wasn't lazy this round and kept its whole cache; a short bar means it was, and got
+        collapsed to sink + recent.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> Each layer's "attention paid to sink + recent"
+        value is assigned deterministically per layer, purely to demonstrate the lazy/not-lazy
+        decision rule. The paper does find that a given layer's laziness is consistent across a
+        generation for a fixed input, but which specific layers tend to be lazy in a real model
+        isn't something this demo attempts to reproduce, that's a real empirical result, not a
+        formula we can fake here.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        SimLayerKV catches a kind of redundancy PyramidKV's depth-based budgeting can't: two
+        layers at the same depth can behave completely differently on the same input, one lazy,
+        one not, and this method can tell them apart, per input, rather than assuming a shape
+        based on depth alone. It's training-free, and the paper reports (per its abstract) roughly
+        a 5x KV cache compression ratio combined with 4-bit quantization at about a 1.2 percentage
+        point score drop on LongBench, tested on LLaMA2-7B, LLaMA3-8B, and Mistral-7B.
+      </p>
+      <p>
+        The tradeoffs are specific to being a binary, per-layer decision rather than a graduated,
+        per-token score. A layer that's mostly lazy but genuinely needs one token buried in the
+        middle has no way to keep just that token, it's sink-plus-recent or the full cache, nothing
+        in between. The <code>lazy_threshold</code> default of 1.0 means the method does nothing
+        at all until you pick a real value, and as covered above, the right value is
+        model-specific and has to be found per family, there's no safe universal default the way
+        Knorm or TOVA need no tuning to do something reasonable out of the box. And detecting
+        laziness itself still costs a real, if cheap, attention computation over the last
+        <code>n_last</code> query positions, done fresh at every check.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>SimLayerKVPress</code>, whose <code>compress()</code>
+        calls <code>is_lazy()</code> per layer and either slices <code>keys</code>/<code>values</code>
+        down to sink + recent or returns them untouched. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/simlayerkv_press.py" target="_blank" rel="noopener">simlayerkv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2410.13846v1" target="_blank" rel="noopener">Zhang, Du, Du, Pang, Gao, Lin, "SimLayerKV: A Simple Framework for Layer-Level KV Cache Reduction," 2024</a>
+        (the authors later replaced this arXiv entry with a follow-up paper, LightTransfer, so the link above is pinned to the original v1 to keep pointing at SimLayerKV specifically).
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const SIM_LAYERS = 12;
+    const N_LAST = 1; // kvpress fixes this default to match "SKLV-decode"
+
+    // Mirrors SimLayerKVPress.compress()'s per-layer decision: a layer is
+    // lazy if its (simulated) sink+recent attention concentration exceeds
+    // lazy_threshold; lazy layers keep n_initial + (n_recent - N_LAST)
+    // tokens, everyone else keeps the full sequence.
+    function simLayerBudgets(N, lazyThreshold, nInitial, nRecent) {
+      const minLength = nInitial + nRecent + N_LAST;
+      const off = lazyThreshold >= 1.0 || N <= minLength;
+
+      const budgets = [];
+      const lazyFlags = [];
+      for (let l = 0; l < SIM_LAYERS; l++) {
+        const concentration = seeded("simlayer-concentration-" + l);
+        const lazy = !off && concentration > lazyThreshold;
+        lazyFlags.push(lazy);
+        budgets.push(lazy ? Math.min(N, Math.max(0, nInitial + nRecent - N_LAST)) : N);
+      }
+      return { budgets, lazyFlags, off };
+    }
+
+    function createSimLayerDemo({ root, tokens }) {
+      const N = tokens.length;
+      const params = { lazyThreshold: 0.75, nInitial: 4, nRecent: 10 };
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("SimLayerKV: per-layer kept-token count out of " + N)]));
+
+      const fallbackNote = el("p", {
+        class: "muted",
+        style: "font-size:12.5px;margin:-6px 0 14px;display:none;",
+      }, [document.createTextNode(
+        "At these settings, compression is off entirely: either lazy_threshold is 1.0 (kvpress's own default, meaning \"never compress\") or the sample is shorter than n_initial + n_recent + n_last. That's the real press's behavior too, not a demo limitation."
+      )]);
+      root.appendChild(fallbackNote);
+
+      const chart = el("div", { class: "layer-chart" });
+      root.appendChild(chart);
+
+      const rows = [];
+      for (let l = 0; l < SIM_LAYERS; l++) {
+        const fill = el("div", { class: "layer-bar-fill" });
+        const track = el("div", { class: "layer-bar-track" }, [fill]);
+        const value = el("div", { class: "layer-value" }, [document.createTextNode("—")]);
+        const row = el("div", { class: "layer-row" }, [
+          el("div", { class: "layer-label" }, [document.createTextNode("layer " + l)]),
+          track,
+          value,
+        ]);
+        chart.appendChild(row);
+        rows.push({ fill, value });
+      }
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const controls = [
+        { key: "lazyThreshold", label: "lazy_threshold", min: 0, max: 1, step: 0.01, default: 0.75, format: (v) => v.toFixed(2) },
+        { key: "nInitial", label: "n_initial (sink)", min: 0, max: 8, step: 1, default: 4 },
+        { key: "nRecent", label: "n_recent (scaled down for this demo)", min: 0, max: N, step: 1, default: 10 },
+      ];
+      controls.forEach((c, idx) => {
+        const inputId = `simlayer-${c.key}-${idx}`;
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(c.format ? c.format(c.default) : String(c.default))]);
+        const labelRow = el("label", { for: inputId }, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", id: inputId, min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = c.format ? c.format(v) : String(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statLazy = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("lazy layers")]),
+      ]);
+      const statAvg = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("avg. cache size")]),
+      ]);
+      statsWrap.appendChild(statLazy);
+      statsWrap.appendChild(statAvg);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const { budgets, lazyFlags, off } = simLayerBudgets(N, params.lazyThreshold, params.nInitial, params.nRecent);
+        fallbackNote.style.display = off ? "block" : "none";
+        budgets.forEach((b, l) => {
+          const pct = Math.round((b / N) * 100);
+          rows[l].fill.style.width = pct + "%";
+          rows[l].value.textContent = `${b} / ${N} ${lazyFlags[l] ? "(lazy)" : ""}`;
+        });
+        const lazyCount = lazyFlags.filter(Boolean).length;
+        statLazy.firstChild.textContent = `${lazyCount} / ${SIM_LAYERS}`;
+        const avg = budgets.reduce((a, b) => a + b, 0) / budgets.length;
+        statAvg.firstChild.textContent = Math.round((avg / N) * 100) + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createSimLayerDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

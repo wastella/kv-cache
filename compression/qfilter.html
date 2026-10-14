@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Q-Filter — kv/cache</title>
+  <meta name="description" content="Score cached keys with a filter vector learned offline for the exact model being served, instead of a heuristic formula: Q-Filter, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/qfilter.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/qfilter.html" />
+  <meta property="og:title" content="Q-Filter — kv/cache" />
+  <meta property="og:description" content="Score cached keys with a filter vector learned offline for the exact model being served, instead of a heuristic formula: Q-Filter, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Q-Filter — kv/cache" />
+  <meta name="twitter:description" content="Score cached keys with a filter vector learned offline for the exact model being served, instead of a heuristic formula: Q-Filter, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / learned</p>
+      <h1>Q-Filter</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Knorm scores a key by a formula someone wrote down: its own length.
+        Q-Filter scores a key by a formula nobody wrote down: a vector
+        learned offline, once per model, that gets dotted against every
+        cached key at inference time. Same shape of rule, keep the highest
+        scorers, but the scoring function itself came from training, not
+        from a hand-picked heuristic.
+      </p>
+
+      <h2>A filter instead of a formula</h2>
+      <p>
+        Every other single-formula method in this catalogue commits to a
+        specific, human-legible rule ahead of time: Knorm bets on vector
+        length, StreamingLLM bets on position. Godey, Devoto, Zhao,
+        Scardapane, Minervini, de la Clergerie, and Sagot bet on something
+        else: let the model's own trained geometry supply the rule. For
+        each layer and each key/value head, Q-Filter learns one filter
+        vector, the same size as a single key vector, meant to stand in
+        for the "typical" query direction that head tends to produce. At
+        inference, no query is needed at all: each cached key is scored by
+        its dot product against that head's learned filter,
+        <code>score = -(filter · key)</code>, and the lowest raw dot
+        products (least aligned with the filter) end up with the highest
+        scores and survive.
+      </p>
+      <p>
+        The filters are trained once, offline, per model architecture, and
+        published to a Hugging Face collection; kvpress downloads the
+        right one automatically based on the model's name. That's a very
+        different operating model from every heuristic in this catalogue:
+        there's no formula to audit in the source code, because the actual
+        rule lives in a set of trained weights that ship separately from
+        both the model and kvpress itself.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Darker tokens have a simulated key vector that's less aligned with
+        the (simulated) learned filter, so they score higher and are more
+        likely to be kept.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There is no trained
+        Q-filter running in this browser, and there couldn't be: the real
+        filters are architecture-specific weights fetched from Hugging Face
+        at model load time. This demo assigns each token a synthetic
+        "filter response" deterministically from its text, purely to show
+        the shape of the eviction rule (score = -(filter · key), keep the
+        least-aligned keys) once a real trained filter is doing the
+        scoring.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        At inference, this costs about what Knorm costs: one dot product
+        per cached key, no observation window, no held-out queries, no
+        attention matrix. But because the filter was fit to that
+        architecture's actual query geometry during training rather than
+        picked as a plausible-sounding correlation, it has more information
+        to work with than a formula like <code>-‖k‖₂</code> ever could. The
+        paper reports 99% needle-in-a-haystack accuracy at 32x compression,
+        matching attention-based methods on retrieval while beating
+        simpler heuristic scorers on generation perplexity. The dependency
+        that buys is real, though: a filter is trained for one specific
+        architecture, and kvpress's loader raises an error rather than
+        degrading gracefully if it can't find one for the model you're
+        running. Point Q-Filter at a fine-tune or a checkpoint the filter
+        wasn't trained for and there's no fallback, unlike Knorm or TOVA,
+        which work on any model with zero setup because their rule doesn't
+        depend on anything learned. And because the filter is fixed once
+        per (layer, head) rather than computed from the live prompt, it
+        represents a typical query for that head in general, not the
+        specific question a given request is actually asking, the way an
+        observation-window method like SnapKV or FINCH can.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>QFilterPress</code>. Its
+        <code>score()</code> is <code>-(q_filter * keys).sum(dim=-1)</code>,
+        where <code>q_filter</code> is loaded per model via
+        <code>QFilters.from_pretrained</code> from the
+        <code>nthngdy/q-filters-*</code> Hugging Face collection, keyed off
+        the model's name. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/qfilter_press.py" target="_blank" rel="noopener">qfilter_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2503.02812" target="_blank" rel="noopener">Godey, Devoto, Zhao, Scardapane, Minervini, de la Clergerie, Sagot, "Q-Filters: Leveraging QK Geometry for Efficient KV Cache Compression," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeQFilter(tokens, params) {
+      const N = tokens.length;
+      // Synthetic per-token "filter response": a stand-in for the real
+      // -(learned filter · key) dot product. Higher here means less
+      // aligned with the (simulated) filter, mirroring how a real
+      // negative dot product turns "less aligned" into "higher score."
+      const response = tokens.map((tok, i) => 0.1 + seeded(tok + i + "qfilter") * 0.9);
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = response.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(response) };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "Q-Filter: learned filter response (simulated)",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeQFilter,
+    });
+  </script>
+</body>
+</html>

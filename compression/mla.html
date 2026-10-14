@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MLA — kv/cache</title>
-  <meta name="description" content="Compress every token's keys and values into one small latent vector, and reconstruct the full per-head versions on the fly: Multi-Head Latent Attention, interactively explained." />
+  <meta name="description" content="Compress every token's keys and values into one small latent vector, then reconstruct the full per-head versions on the fly: MLA, interactively explained." />
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
@@ -13,14 +13,14 @@
   <meta property="og:site_name" content="kv/cache" />
   <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/mla.html" />
   <meta property="og:title" content="MLA — kv/cache" />
-  <meta property="og:description" content="Compress every token's keys and values into one small latent vector, and reconstruct the full per-head versions on the fly: Multi-Head Latent Attention, interactively explained." />
+  <meta property="og:description" content="Compress every token's keys and values into one small latent vector, then reconstruct the full per-head versions on the fly: MLA, interactively explained." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="MLA — kv/cache" />
-  <meta name="twitter:description" content="Compress every token's keys and values into one small latent vector, and reconstruct the full per-head versions on the fly: Multi-Head Latent Attention, interactively explained." />
+  <meta name="twitter:description" content="Compress every token's keys and values into one small latent vector, then reconstruct the full per-head versions on the fly: MLA, interactively explained." />
   <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <link rel="stylesheet" href="../css/style.css" />
 </head>
@@ -40,11 +40,11 @@
     </header>
 
     <main>
-      <p class="kicker"><a href="index.html" class="quiet">compression</a> / architecture-level</p>
-      <h1>MLA — Multi-Head Latent Attention</h1>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / architecture</p>
+      <h1>MLA: Multi-Head Latent Attention</h1>
       <p class="lede">
-        <a href="gqa-mqa.html">GQA and MQA</a> shrink the cache by sharing
-        key/value heads across query heads — fewer distinct vectors, each
+        <strong>TL;DR:</strong> <a href="gqa-mqa.html">GQA and MQA</a> shrink the cache by sharing
+        key/value heads across query heads: fewer distinct vectors, each
         one the same size as before. DeepSeek's Multi-Head Latent Attention
         does something different: it keeps every head's information, but
         compresses each token's keys and values down into one small shared
@@ -58,8 +58,8 @@
         vector and V vector for every head. MLA replaces that with a
         learned <strong>down-projection</strong>: a token's hidden state is
         compressed into a single low-dimensional latent vector,
-        <code>c_KV</code>, and that latent — not the per-head keys and
-        values themselves — is the only thing written to the cache. At
+        <code>c_KV</code>, and that latent, not the per-head keys and
+        values themselves, is the only thing written to the cache. At
         attention time, a learned <strong>up-projection</strong>
         reconstructs the full-size, per-head keys and values back out of
         that one latent. Nothing is shared or duplicated across heads the
@@ -73,7 +73,7 @@
         applying RoPE directly to the compressed latent breaks the
         relative-position math attention relies on.
         DeepSeek's actual implementation works around this by splitting
-        keys into two parts — most of each key's dimensions come from the
+        keys into two parts: most of each key's dimensions come from the
         compressed, position-free latent, while a smaller "decoupled" slice
         carries rotary position information and is computed and cached
         separately, shared across heads rather than compressed per-head.
@@ -88,35 +88,24 @@
       <p class="muted" style="font-size:12.5px;">
         Drag the slider to shrink or grow the latent vector's size. The
         per-head cells above it are never actually written to the cache in
-        MLA — they only exist momentarily, reconstructed from the latent
+        MLA: they only exist momentarily, reconstructed from the latent
         when attention needs them. That's also why the per-head grid stays
         the same size no matter where the slider sits: the up-projection
         always reconstructs full-size heads, so shrinking the latent
         shrinks only what's cached, not what attention eventually sees.
       </p>
-      <div class="note">
-        <strong>Simplified, not to scale.</strong> The grid above uses a
-        toy 6 heads × 8 dimensions shape so it's legible on the page.
-        DeepSeek-V2 actually has 128 attention heads with 128 dimensions
-        each for keys (and another 128 for values) — the real per-token
-        numbers are far larger than what's drawn here. The compression
-        ratio the slider produces is illustrative, not measured from a real
-        forward pass; the real ratio, from DeepSeek's own published
-        numbers, is below.
-      </div>
-
       <h2>How much smaller, really</h2>
       <p>
         DeepSeek-V2's paper states MLA "reduces the KV cache by 93.3%"
         compared to DeepSeek 67B, and reports a 5.76x increase in maximum
         generation throughput as a consequence. That's an end-to-end
         comparison across two different models, not a clean same-shape
-        ablation — and DeepSeek 67B is itself dense, but it isn't plain
+        ablation, and DeepSeek 67B is itself dense, but it isn't plain
         multi-head attention either: its own released config shows 64 query
         heads sharing 8 key/value heads, i.e. it already used GQA. So the
         93.3% figure is MLA against an already GQA-compressed cache, not
-        against the naive MHA baseline the wording might suggest — if
-        anything that makes the number more notable, not less.
+        against the naive MHA baseline the wording might suggest. If
+        anything, that makes the number more notable, not less.
       </p>
       <p>
         The released DeepSeek-V2 config backs up a similar order of
@@ -124,26 +113,28 @@
         size) to 512 and <code>qk_rope_head_dim</code> (the decoupled
         rotary part) to 64, for 576 cached elements per token. You can see
         the saving in the shapes themselves in DeepSeek-V3's official
-        inference code: the actual cache buffer is sized just
-        <code>kv_lora_rank</code> elements per token, while the
-        up-projection weight that reconstructs the full-size keys and
-        values back out of it, <code>wkv_b</code>, is shaped
-        <code>n_heads * (qk_nope_head_dim + v_head_dim)</code> —
+        inference code: it registers two small cache buffers per token, one
+        sized <code>kv_lora_rank</code> for the compressed latent and one
+        sized <code>qk_rope_head_dim</code> for the decoupled rotary part,
+        the same 576 elements the config implies. The up-projection weight
+        that reconstructs the full-size keys and values back out of the
+        latent, <code>wkv_b</code>, is shaped
+        <code>n_heads * (qk_nope_head_dim + v_head_dim)</code>,
         which for DeepSeek-V2's 128 heads at 128 dimensions each works out
         to 32,768 elements per token, the size an equivalently-shaped
         ordinary multi-head cache would need. That's roughly
-        <strong>57x</strong> fewer cached elements per token by that
-        arithmetic — a number derived here from DeepSeek's own published
-        config and code, not a figure either paper states outright, so
-        treat the exact multiple as approximate even though the underlying
-        numbers are real.
+        <strong>57x</strong> fewer cached elements per token (32,768 ÷ 576)
+        by that arithmetic: a number derived here from DeepSeek's own
+        published config and code, not a figure either paper states
+        outright, so treat the exact multiple as approximate even though
+        the underlying numbers are real.
       </p>
 
       <h2>Where this shines, and where it doesn't</h2>
       <p>
         The headline result both DeepSeek papers report is that MLA gets a
         larger cache reduction than GQA typically achieves while matching
-        or exceeding ordinary multi-head attention's quality — a
+        or exceeding ordinary multi-head attention's quality: a
         combination GQA and MQA don't claim, since both trade away some
         quality for their memory savings. That's plausible precisely
         because MLA isn't sharing or discarding anything the way GQA does;
@@ -156,7 +147,7 @@
         become a speed bottleneck at inference) a matrix-absorption trick
         that folds it into neighboring projections rather than ever
         materializing full per-head keys explicitly. And like GQA/MQA, it's
-        a pretraining-time architecture decision — you cannot retrofit MLA
+        a pretraining-time architecture decision: you cannot retrofit MLA
         onto an existing ordinary-attention checkpoint the way any press in
         the catalogue can run against any model as-is, and so far it's been
         proven out primarily inside DeepSeek's own model family rather than
@@ -181,7 +172,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -200,19 +191,19 @@
       root.appendChild(
         el("div", { class: "demo-label" }, [
           document.createTextNode(
-            "MLA — one token's key cache, " + MLA_HEADS + " heads x " + MLA_DIMS_PER_HEAD + " dims (illustrative)"
+            "MLA: one token's key cache, " + MLA_HEADS + " heads x " + MLA_DIMS_PER_HEAD + " dims (illustrative)"
           ),
         ])
       );
 
       const legend = el("div", { class: "legend" });
       legend.appendChild(
-        el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("cached — the latent vector")])
+        el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("cached: the latent vector")])
       );
       legend.appendChild(
         el("span", {}, [
           el("span", { class: "swatch evicted" }),
-          document.createTextNode("never stored — reconstructed from the latent when needed"),
+          document.createTextNode("never stored: reconstructed from the latent when needed"),
         ])
       );
       root.appendChild(legend);
@@ -246,10 +237,12 @@
       root.appendChild(latentRow);
 
       const controlsWrap = el("div", { class: "demo-controls" });
+      const inputId = "mla-latent";
       const valSpan = el("span", { class: "val" }, [document.createTextNode(String(params.latent))]);
-      const labelRow = el("label", {}, [document.createTextNode("latent dimension (illustrative units) "), valSpan]);
+      const labelRow = el("label", { for: inputId }, [document.createTextNode("latent dimension (illustrative units) "), valSpan]);
       const input = el("input", {
         type: "range",
+        id: inputId,
         min: 2,
         max: MLA_TOTAL_UNCOMPRESSED,
         step: 1,

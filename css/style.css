@@ -6,7 +6,7 @@
 :root {
   --bg: #f6f5f0;
   --ink: #17160f;
-  --muted: #726f63;
+  --muted: #5f5a4e;
   --border: #ddd9cc;
   --border-strong: #17160f;
   --keep: #17160f;
@@ -204,7 +204,7 @@ ul.rows li:first-child {
   border-top: 1px solid var(--border);
 }
 
-ul.rows a.row-link {
+ul.rows .row-link {
   display: block;
   padding: 18px 2px;
   border-bottom: none;
@@ -237,17 +237,6 @@ ul.rows a.row-link:hover {
   font-size: 13.5px;
   margin-top: 6px;
   max-width: 56ch;
-}
-
-.row-tag {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  padding: 2px 7px;
-  border-radius: 100px;
-  white-space: nowrap;
 }
 
 /* footer */
@@ -323,7 +312,6 @@ footer.site a {
 }
 
 .token.evicted {
-  opacity: 0.45;
   color: var(--evict);
   border-color: var(--border);
   background: var(--evict-bg);
@@ -342,7 +330,8 @@ footer.site a {
 }
 
 .token.pending {
-  opacity: 0.28;
+  color: var(--muted);
+  border-color: var(--border);
   border-style: dashed;
   background: transparent;
 }
@@ -376,7 +365,8 @@ footer.site a {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
-  width: 40px;
+  min-width: 40px;
+  white-space: nowrap;
 }
 
 .qkv-selector-pills {
@@ -453,7 +443,7 @@ footer.site a {
 }
 
 .qkv-row.discarded .qkv-num {
-  opacity: 0.4;
+  color: var(--muted);
   text-decoration: line-through;
   border-color: var(--border);
   background: transparent;
@@ -800,92 +790,209 @@ button.btn.ghost {
   margin: 18px 0 6px;
 }
 
-.chart-legend {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-  font-size: 12px;
+/* ============ evaluation additions: formula + calculation demos ============ */
+
+.formula-box {
+  margin: 4px 0 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0,0,0,0.02);
+}
+
+.formula-main {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--ink);
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.formula-sub {
+  font-size: 11.5px;
   color: var(--muted);
+  line-height: 1.5;
+  max-width: 62ch;
+}
+
+.surprisal-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
   margin-bottom: 6px;
 }
 
-.chart-legend .item {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 3px 2px;
-  cursor: default;
-  transition: opacity 0.15s ease;
-}
-
-.chart-legend .item.dim {
-  opacity: 0.4;
-}
-
-.chart-legend .item .line-swatch {
-  width: 16px;
-  height: 0;
-  border-top: 2px solid;
-  display: inline-block;
-}
-
-.chart-svg-wrap {
-  position: relative;
-}
-
-.chart-svg-wrap:focus {
-  outline: none;
-}
-
-.chart-svg-wrap svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  overflow: visible;
-}
-
-.chart-tooltip {
-  position: absolute;
-  background: var(--ink);
-  color: var(--bg);
-  font-size: 11.5px;
-  padding: 7px 10px;
-  border-radius: 3px;
-  pointer-events: none;
-  line-height: 1.6;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 0.1s ease;
-  z-index: 5;
-  transform: translate(-50%, -100%);
-  margin-top: -10px;
-}
-
-.chart-tooltip.visible {
-  opacity: 1;
-}
-
-.chart-tooltip .t-x {
-  color: var(--muted);
-  margin-bottom: 3px;
-}
-
-.chart-tooltip .t-row {
+.surprisal-col {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
 }
 
-.chart-tooltip .t-row .key {
-  width: 10px;
-  height: 0;
-  border-top: 2px solid;
-  display: inline-block;
-  flex-shrink: 0;
+.surprisal-bar-track {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 80px;
+  width: 100%;
 }
 
-.chart-tooltip .t-row .t-val {
+.surprisal-bar {
+  width: 60%;
+  max-width: 22px;
+  background: var(--evict);
+  border-radius: 2px 2px 0 0;
+  transition: height 0.3s ease;
+}
+
+.surprisal-bar.sel {
+  background: var(--ink);
+}
+
+.surprisal-val {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.surprisal-tok {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink);
+  text-align: center;
+  word-break: break-word;
+}
+
+.surprisal-col:not(.context) {
+  cursor: pointer;
+}
+
+.surprisal-col.context .surprisal-tok {
+  color: var(--muted);
+}
+
+.surprisal-tok.selected {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* compact variant: many tokens (e.g. a full passage) — fixed-width
+   columns, no permanent per-token labels, hover for the token itself */
+.surprisal-strip.compact {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.surprisal-strip.compact .surprisal-col {
+  flex: 0 0 auto;
+  width: 11px;
+}
+
+.surprisal-strip.compact .surprisal-val,
+.surprisal-strip.compact .surprisal-tok {
+  display: none;
+}
+
+.calc-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.calc-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+.calc-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  min-width: 130px;
+}
+
+.calc-expr {
+  font-family: var(--mono);
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.calc-result {
+  font-family: var(--mono);
   font-weight: 600;
-  margin-left: auto;
-  padding-left: 10px;
+  color: var(--ink);
+  white-space: nowrap;
 }
+
+/* ============ CaM additions: merge-vs-evict token states ============ */
+.token.cam-merged {
+  text-decoration: none;
+  border-style: dashed;
+}
+.token.cam-merged::after {
+  content: " \2192";
+  opacity: 0.7;
+}
+.token.cam-merge-target {
+  border-color: var(--evict);
+  box-shadow: 0 0 0 2px var(--evict-bg);
+}
+
+/* ============ catalogue additions: lag-relative partitions (LagKV) ============ */
+
+.lag-groups {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.lag-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0,0,0,0.015);
+}
+
+.lag-group.sink,
+.lag-group.tail {
+  border-style: dashed;
+}
+
+.lag-group-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.lag-group-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: 170px;
+}
+
+.lag-arrow {
+  align-self: center;
+  color: var(--muted);
+  font-size: 16px;
+  padding: 0 2px;
+  margin-top: 22px;
+}
+

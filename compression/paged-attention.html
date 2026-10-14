@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PagedAttention — kv/cache</title>
-  <meta name="description" content="vLLM's virtual-memory-inspired scheme for the KV cache: stop pre-allocating one giant contiguous buffer per sequence, allocate fixed-size pages on demand instead." />
+  <meta name="description" content="vLLM's virtual-memory-inspired KV cache scheme: stop pre-allocating one giant buffer per sequence, allocate fixed-size pages on demand instead." />
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
@@ -13,14 +13,14 @@
   <meta property="og:site_name" content="kv/cache" />
   <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/paged-attention.html" />
   <meta property="og:title" content="PagedAttention — kv/cache" />
-  <meta property="og:description" content="vLLM's virtual-memory-inspired scheme for the KV cache: stop pre-allocating one giant contiguous buffer per sequence, allocate fixed-size pages on demand instead." />
+  <meta property="og:description" content="vLLM's virtual-memory-inspired KV cache scheme: stop pre-allocating one giant buffer per sequence, allocate fixed-size pages on demand instead." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="PagedAttention — kv/cache" />
-  <meta name="twitter:description" content="vLLM's virtual-memory-inspired scheme for the KV cache: stop pre-allocating one giant contiguous buffer per sequence, allocate fixed-size pages on demand instead." />
+  <meta name="twitter:description" content="vLLM's virtual-memory-inspired KV cache scheme: stop pre-allocating one giant buffer per sequence, allocate fixed-size pages on demand instead." />
   <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <link rel="stylesheet" href="../css/style.css" />
 </head>
@@ -43,36 +43,37 @@
       <p class="kicker"><a href="index.html" class="quiet">compression</a> / systems</p>
       <h1>PagedAttention</h1>
       <p class="lede">
-        Every method in the <a href="../compression/index.html">catalogue</a>
+        <strong>TL;DR:</strong> Every method in the <a href="../compression/index.html">catalogue</a>
         decides <em>which</em> KV entries to keep. PagedAttention doesn't
-        touch that decision — it changes where the entries you've already
-        decided to keep live in GPU memory. Not compression itself, it's
-        what determines whether a compression technique's savings actually
-        turn into more sequences served, or vanish into fragmentation.
+        touch that decision: it changes where the entries you've already
+        decided to keep live in GPU memory. It isn't compression itself,
+        but it's what determines whether a compression technique's savings
+        actually turn into more sequences served, or vanish into
+        fragmentation.
       </p>
 
       <h2>Reserving for the worst case</h2>
       <p>
         A naive serving system has to put each sequence's KV cache
         somewhere, and the simplest place is one contiguous slab of GPU
-        memory per sequence — contiguous because the attention kernel
+        memory per sequence: contiguous because the attention kernel
         expects to walk a sequence's keys and values as a single block.
         The problem is that a slab has to be sized before you know how long
         generation will actually run, so it gets sized for the worst case:
         the model's maximum context length. A request that generates 40
-        tokens still reserves room for, say, 4096 — the other 4056 slots
+        tokens still reserves room for, say, 4096: the other 4056 slots
         sit there empty for the lifetime of the request, unusable by any
         other sequence even though nothing is stored in them.
       </p>
       <p>
         Kwon et al. measured this waste directly in existing serving
-        systems and found <strong>60–80% of allocated KV cache memory
-        going unused</strong> — internal fragmentation from sizing every
+        systems and found <strong>60-80% of allocated KV cache memory
+        going unused</strong>: internal fragmentation from sizing every
         request for a length it will almost never reach, plus external
         fragmentation as slabs of different reserved sizes leave
         unusable gaps between each other. Worse, because each sequence's
         cache is a separate contiguous slab, there's no way to let two
-        sequences share memory even when they'd benefit from it — a
+        sequences share memory even when they'd benefit from it: a
         shared system prompt prefix, or the parallel branches of a beam
         search, each get their own full copy.
       </p>
@@ -83,10 +84,10 @@
         virtual memory. Instead of one contiguous slab, a sequence's KV
         cache is split into fixed-size <strong>blocks</strong> (kvpress and
         the catalogue call the unit a "token"; vLLM calls it a "block" or
-        "page" — same idea, a fixed chunk of storage), each holding the
-        key and value vectors for a fixed number of positions. A per-sequence
-        <strong>block table</strong> maps logical positions — "this
-        sequence's 5th block" — to wherever that block actually lives in
+        a "page"; all three names mean the same fixed chunk of storage),
+        each holding the key and value vectors for a fixed number of positions. A per-sequence
+        <strong>block table</strong> maps logical positions ("this
+        sequence's 5th block") to wherever that block actually lives in
         physical GPU memory, which does not need to be next to the
         sequence's other blocks at all. The attention kernel is rewritten
         to read through this indirection instead of assuming a flat
@@ -97,12 +98,12 @@
         actually generates enough tokens to fill the current one, and
         freed back to a shared pool the instant the sequence finishes.
         Nothing is ever reserved ahead of need. vLLM reports this brings
-        fragmentation from that 60–80% figure down to
+        fragmentation from that 60-80% figure down to
         <strong>under 4%</strong>. The same indirection also makes
         sharing nearly free: two sequences with an identical prompt
         prefix can point the same logical blocks at the same physical
-        blocks, and only fork a private copy — copy-on-write, with
-        reference counting — the moment one of them actually writes
+        blocks, and only fork a private copy (copy-on-write, with
+        reference counting) the moment one of them actually writes
         something different. vLLM's authors report this cuts memory
         overhead by up to 55% for memory-heavy sampling patterns like
         beam search.
@@ -113,7 +114,7 @@
         Two toy sequences, A and B, share a GPU with room for
         <code>40</code> physical blocks of <code>16</code> tokens each
         (640 tokens total). The model's maximum context length is 512
-        tokens — 32 blocks. Drag each sequence's length and watch what
+        tokens: 32 blocks. Drag each sequence's length and watch what
         each allocation strategy actually reserves.
       </p>
       <div id="demo"></div>
@@ -121,15 +122,15 @@
         <strong>Illustrative, not measured.</strong> The block size (16),
         pool size (40 blocks), and max length (512) are round numbers
         chosen to make the contrast legible, not values pulled from a
-        real deployment. The <em>shape</em> of the difference — reserve
-        the max vs. allocate on demand — is the real mechanism from the
+        real deployment. The <em>shape</em> of the difference (reserve
+        the max vs. allocate on demand) is the real mechanism from the
         paper.
       </div>
 
       <h2>What this buys you, and what it doesn't</h2>
       <p>
         PagedAttention doesn't reduce how much KV data logically exists
-        for a given sequence and compression ratio — that number is set
+        for a given sequence and compression ratio: that number is set
         entirely by whatever's upstream of it: the model's architecture
         (see <a href="gqa-mqa.html">GQA/MQA</a>,
         <a href="mla.html">MLA</a>) and whichever catalogue press, if
@@ -137,20 +138,20 @@
         that logical size and the physical memory a naive system would
         have burned reserving room for it. That's exactly why it composes
         with everything else on this site rather than competing with it:
-        run StreamingLLM or H2O on top of a paged KV cache and you shrink
-        the logical cache further, on top of memory that was already
-        being allocated efficiently. The two savings stack.
+        run an inference-time eviction method on top of a paged KV cache
+        and you shrink the logical cache further, on top of memory that
+        was already being allocated efficiently. The two savings stack.
       </p>
       <p>
         The cost is indirection. Every attention computation now walks a
         block table instead of reading a flat array, which is real
-        kernel complexity vLLM had to solve with custom CUDA — and
-        picking a good block size is its own tradeoff: too small and the
+        kernel complexity vLLM had to solve with custom CUDA; picking
+        a good block size is its own tradeoff: too small and the
         per-block bookkeeping overhead and kernel launch cost start to
         matter; too large and you're back to wasting the tail end of the
         last block per sequence (bounded internal fragmentation, but
-        never zero). None of this is visible to a user of the system —
-        it's the reason vLLM reports 2–4× the throughput of prior serving
+        never zero). None of this is visible to a user of the system:
+        it's the reason vLLM reports 2-4× the throughput of prior serving
         systems at the same latency, serving more concurrent sequences on
         the same GPU than a naive implementation, without changing a
         single output token.
@@ -161,11 +162,11 @@
         vLLM is the reference implementation and the system the original
         paper was built around. Its kernel design doc walks through block
         size, physical block numbers, and the block-offset arithmetic the
-        attention kernel actually uses — vLLM itself now flags this doc as
+        attention kernel actually uses: vLLM itself now flags this doc as
         historical, describing the original kernel rather than the current
         code, but the block-table mechanics it explains are still the right
         mental model:
-        <a href="https://docs.vllm.ai/en/latest/design/paged_attention.html" target="_blank" rel="noopener">docs.vllm.ai — PagedAttention kernel design</a>.
+        <a href="https://docs.vllm.ai/en/latest/design/paged_attention/" target="_blank" rel="noopener">docs.vllm.ai: PagedAttention kernel design</a>.
         The block allocator itself now lives in vLLM's V1 engine, in
         <code>KVCacheManager</code>:
         <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_manager.py" target="_blank" rel="noopener">vllm/v1/core/kv_cache_manager.py</a>.
@@ -183,7 +184,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -192,7 +193,7 @@
   <script>
     const BLOCK = 16;       // tokens per block
     const MAX_LEN = 512;    // model's max context length
-    const MAX_BLOCKS = MAX_LEN / BLOCK; // 32 — what contiguous pre-allocation reserves per sequence
+    const MAX_BLOCKS = MAX_LEN / BLOCK; // 32: what contiguous pre-allocation reserves per sequence
     const POOL_BLOCKS = 40; // total physical blocks available on this toy GPU
 
     function blocksFor(len) {
@@ -224,7 +225,7 @@
       legend.appendChild(el("span", {}, [el("span", { class: "mem-block free", style: "width:10px;height:10px;" }), document.createTextNode("free / available")]));
       root.appendChild(legend);
 
-      const contiguousTitle = el("div", { class: "chart-panel-title", style: "margin-top:2px;" }, [document.createTextNode("contiguous pre-allocation — reserves the max, always")]);
+      const contiguousTitle = el("div", { class: "chart-panel-title", style: "margin-top:2px;" }, [document.createTextNode("contiguous pre-allocation: reserves the max, always")]);
       root.appendChild(contiguousTitle);
       const rowA = memRow("sequence A");
       const rowB = memRow("sequence B");
@@ -234,7 +235,7 @@
       const overflowNote = el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0 0;" }, [document.createTextNode("")]);
       root.appendChild(overflowNote);
 
-      const pagedTitle = el("div", { class: "chart-panel-title" }, [document.createTextNode("paged allocation — draws from a shared 40-block pool")]);
+      const pagedTitle = el("div", { class: "chart-panel-title" }, [document.createTextNode("paged allocation: draws from a shared 40-block pool")]);
       root.appendChild(pagedTitle);
       const poolRow = memRow("physical pool");
       root.appendChild(poolRow.row);
@@ -248,10 +249,11 @@
         { key: "lenA", label: "sequence A length (tokens)", min: 0, max: MAX_LEN, step: BLOCK, default: params.lenA },
         { key: "lenB", label: "sequence B length (tokens)", min: 0, max: MAX_LEN, step: BLOCK, default: params.lenB },
       ];
-      controls.forEach((c) => {
+      controls.forEach((c, idx) => {
+        const inputId = `paged-${c.key}-${idx}`;
         const valSpan = el("span", { class: "val" }, [document.createTextNode(String(c.default))]);
-        const labelRow = el("label", {}, [document.createTextNode(c.label + " "), valSpan]);
-        const input = el("input", { type: "range", min: c.min, max: c.max, step: c.step, value: c.default });
+        const labelRow = el("label", { for: inputId }, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", id: inputId, min: c.min, max: c.max, step: c.step, value: c.default });
         input.addEventListener("input", () => {
           const v = parseFloat(input.value);
           params[c.key] = v;
@@ -294,7 +296,7 @@
 
         const contiguousTotal = MAX_BLOCKS * 2;
         if (contiguousTotal > POOL_BLOCKS) {
-          overflowNote.textContent = `Reserving the max for both sequences needs ${contiguousTotal} blocks — more than the ${POOL_BLOCKS}-block pool. A contiguous-allocation system can't even admit both of these requests, no matter how short they turn out to be.`;
+          overflowNote.textContent = `Reserving the max for both sequences needs ${contiguousTotal} blocks: more than the ${POOL_BLOCKS}-block pool. A contiguous-allocation system can't even admit both of these requests, no matter how short they turn out to be.`;
         } else {
           overflowNote.textContent = `${contiguousTotal} of ${POOL_BLOCKS} blocks reserved, regardless of how many tokens either sequence has actually generated.`;
         }
@@ -308,9 +310,9 @@
         fillBlocks(poolRow.blocks, Math.max(0, POOL_BLOCKS - shownA - shownB), "free");
 
         if (pagedTotal > POOL_BLOCKS) {
-          pagedOverflowNote.textContent = `${pagedTotal} blocks actually needed — more than the ${POOL_BLOCKS}-block pool holds (shown maxed out above). Paged allocation gets both sequences much further than contiguous pre-allocation would, since it only ever hands out blocks that are actually in use — but the pool is still finite. Past this point the scheduler queues one of the sequences instead of admitting it; it just doesn't waste ${contiguousTotal} blocks of reservation finding that out.`;
+          pagedOverflowNote.textContent = `${pagedTotal} blocks actually needed: more than the ${POOL_BLOCKS}-block pool holds (shown maxed out above). Paged allocation gets both sequences much further than contiguous pre-allocation would, since it only ever hands out blocks that are actually in use, but the pool is still finite. Past this point the scheduler queues one of the sequences instead of admitting it; it just doesn't waste ${contiguousTotal} blocks of reservation finding that out.`;
         } else {
-          pagedOverflowNote.textContent = `${pagedTotal} of ${POOL_BLOCKS} blocks allocated — only what's actually in use, so ${POOL_BLOCKS - pagedTotal} blocks remain free for other sequences.`;
+          pagedOverflowNote.textContent = `${pagedTotal} of ${POOL_BLOCKS} blocks allocated: only what's actually in use, so ${POOL_BLOCKS - pagedTotal} blocks remain free for other sequences.`;
         }
 
         statContiguous.firstChild.textContent = `${contiguousTotal} blocks`;

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CriticalKV — kv/cache</title>
+  <meta name="description" content="Rescale an existing scoring method by how much each token's value actually moves the model's output, not just how much attention it receives: CriticalKV, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/critical-kv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/critical-kv.html" />
+  <meta property="og:title" content="CriticalKV — kv/cache" />
+  <meta property="og:description" content="Rescale an existing scoring method by how much each token's value actually moves the model's output, not just how much attention it receives: CriticalKV, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="CriticalKV — kv/cache" />
+  <meta name="twitter:description" content="Rescale an existing scoring method by how much each token's value actually moves the model's output, not just how much attention it receives: CriticalKV, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / attention-based</p>
+      <h1>CriticalKV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every scoring method in this catalogue asks some version of "how much
+        attention does this token get?" CriticalKV asks a different
+        question on top of that: once a token's value vector actually gets
+        projected into the model's output, how much does it move that
+        output? It doesn't replace your scoring method, it rescales it.
+      </p>
+
+      <h2>Attention isn't the same as impact</h2>
+      <p>
+        Feng, Lv, Guo, Cao, Zhou, and Xie's paper frames KV cache eviction as
+        an <strong>output perturbation</strong> problem: the thing that
+        actually matters isn't how much attention weight a cached token
+        earns, it's how much the model's final output changes if you evict
+        it. Those two things usually track each other, but not always. A
+        token's value vector still has to pass through the attention head's
+        output projection (<code>W_o</code>) before it affects anything
+        downstream, and a token that gets moderate attention but whose value
+        lands in a direction <code>W_o</code> amplifies can matter more than
+        a heavily-attended token whose value gets projected into something
+        closer to a null direction.
+      </p>
+      <p>
+        CriticalKV doesn't compute this from scratch. It wraps an existing
+        <code>ScorerPress</code> (SnapKV, Knorm, whatever you'd otherwise
+        use) and rescales that press's scores using
+        <code>‖(V · W_o)‖₁</code>: the L1 norm of each token's value vector
+        after being passed through the output projection, averaged across
+        query groups when the model uses grouped-query attention. Higher
+        projected norm means this token's value pushes the output further,
+        so its score gets amplified; a token the base press already liked
+        but whose value barely moves the output gets pulled back down.
+      </p>
+
+      <h2>Two stages, so the rescale can't backfire</h2>
+      <p>
+        Rescaling by an unrelated signal is risky on its own: if the base
+        press's top pick happens to have a small projected-value norm, a
+        naive rescale could bump it out of the kept set entirely, discarding
+        a token the underlying method was confident about. CriticalKV
+        guards against that with a two-stage split, controlled by
+        <code>first_stage_ratio</code> (default 0.5):
+      </p>
+      <p>
+        <strong>Stage 1</strong> takes the base press's own scores and locks
+        in the top <code>first_stage_ratio</code> fraction of the eventual
+        budget, untouched by anything that follows.
+        <strong>Stage 2</strong> then rescales <em>every</em> token's score
+        by the projected value norm, and writes the stage-1 survivors back
+        in at the maximum representable score, so the rescale can shuffle
+        the rest of the ranking but can never displace what stage 1 already
+        guaranteed. The final kept set still comes from a standard top-k
+        over these combined scores, the same <code>int(k_len * (1 -
+        compression_ratio))</code> budget every <code>ScorerPress</code>
+        on this site uses.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Shade tracks each token's final score after both stages. Tokens
+        locked in during stage 1 (the darkest ones) survive no matter what
+        the value-projection rescale does to everything else.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real base press,
+        value vector, or output-projection matrix behind this demo. The
+        "base score" and the "projected value norm" are both generated
+        locally from a deterministic seed, illustrating the two-stage
+        rescaling rule real <code>CriticalKVPress</code> applies once actual
+        scores and value vectors come out of a forward pass and a wrapped
+        scoring method.
+      </div>
+
+      <h3>CriticalAdaKV: the same rescale, with adaptive per-head budgets</h3>
+      <p>
+        kvpress also ships <code>CriticalAdaKVPress</code>, which combines
+        this rescaling with AdaKV-style adaptive head-wise compression: each
+        attention head gets its own kept-token budget (proportional to how
+        much of the total top-scoring mass falls in that head, subject to an
+        <code>alpha_safeguard</code> minimum per head) instead of every head
+        getting the same flat share. Within each head's budget, the same
+        stage-1/stage-2 CriticalKV rescale decides which tokens fill it.
+        Mechanically it also works differently from most presses on this
+        site: rather than trimming the K/V tensors it returns, it computes
+        which <code>(batch, head, position)</code> triples to mask out and
+        stores them on the module for the attention computation to apply
+        directly.
+      </p>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because it's a wrapper, CriticalKV is a way to squeeze more accuracy
+        out of a scoring method you're already using, not a competing
+        alternative to it. The paper reports that layering it on top of
+        three existing eviction methods roughly halves their average
+        compression loss across a 29-dataset evaluation spanning the Ruler
+        and LongBench benchmarks. The cost is real, though: computing
+        <code>V · W_o</code> per head is extra work on top of whatever the
+        wrapped press already costs, and it needs direct access to the
+        model's output-projection weight matrix and its grouped-query head
+        layout, which ties the current implementation to models kvpress can
+        introspect that way. It's also easy to double-count: the source
+        explicitly warns against wrapping <code>ExpectedAttentionPress</code>
+        with <code>use_vnorm</code> left enabled, since that press already
+        does a similar value-magnitude rescale on its own.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>CriticalKVPress</code> (wraps any
+        <code>ScorerPress</code>) and <code>CriticalAdaKVPress</code> (the
+        AdaKV-combined variant). See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/criticalkv_press.py" target="_blank" rel="noopener">criticalkv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2502.03805" target="_blank" rel="noopener">Feng, Lv, Guo, Cao, Zhou, Xie, "CriticalKV: Optimizing KV Cache Eviction from an Output Perturbation Perspective," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeCriticalKV(tokens, params) {
+      const N = tokens.length;
+      const ratio = params.ratio;
+      const fsr = params.firstStageRatio;
+      const EPS = 1e-4; // matches CriticalKVPress's default epsilon
+
+      // Simulated base score: a stand-in for whatever ScorerPress
+      // CriticalKV is wrapping (SnapKV, Knorm, TOVA, ...). Real CriticalKV
+      // doesn't invent this itself, it rescales whatever base press you
+      // hand it.
+      const base = tokens.map((tok, i) => 0.1 + seeded(tok + i + "ckv-base") * 0.9);
+
+      // Simulated "projected value norm": how much this token's value
+      // vector moves the output once passed through W_o, not just how much
+      // attention it earns. Real CriticalKVPress computes this as
+      // vwl1norm(): the L1 norm of (V @ W_o), averaged across query groups.
+      const projNorm = tokens.map((tok, i) => 0.15 + seeded(tok + i + "ckv-wov") * 0.85);
+
+      // Stage 1: lock in the top `selection_budget` tokens by the base
+      // score alone. Real: selection_budget =
+      // int((1 - compression_ratio) * k_len * first_stage_ratio)
+      const selectionBudget = Math.max(0, Math.floor((1 - ratio) * N * fsr));
+      const rankedByBase = base.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const stage1 = new Set(rankedByBase.slice(0, selectionBudget).map((p) => p[1]));
+
+      // Stage 2: rescale every score by the projected value norm, then
+      // write the stage-1 survivors back in above everything else so the
+      // rescale can't displace what stage 1 already guaranteed. Real code
+      // scatters torch.finfo(dtype).max; here we just use a value
+      // guaranteed to outrank every rescaled score.
+      const rescaled = base.map((s, i) => (s + EPS) * projNorm[i]);
+      const maxRescaled = Math.max(...rescaled);
+      const finalScores = rescaled.map((s, i) => (stage1.has(i) ? maxRescaled * 1.2 : s));
+
+      // Final top-k, the same ScorerPress default every page on this site
+      // uses: n_kept = int(k_len * (1 - compression_ratio)), truncated.
+      const budget = Math.max(1, Math.floor(N * (1 - ratio)));
+      const ranked = finalScores.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(finalScores) };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "CriticalKV: base score rescaled by output-projection value norm",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "firstStageRatio", label: "first-stage ratio", min: 0, max: 1, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeCriticalKV,
+    });
+  </script>
+</body>
+</html>

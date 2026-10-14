@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CapKV — kv/cache</title>
+  <meta name="description" content="Score each cached token by how much unique, query-relevant information its value vector would leave behind if evicted, not by how much attention it's received: CapKV, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/capkv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/capkv.html" />
+  <meta property="og:title" content="CapKV — kv/cache" />
+  <meta property="og:description" content="Score each cached token by how much unique, query-relevant information its value vector would leave behind if evicted, not by how much attention it's received: CapKV, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="CapKV — kv/cache" />
+  <meta name="twitter:description" content="Score each cached token by how much unique, query-relevant information its value vector would leave behind if evicted, not by how much attention it's received: CapKV, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / attention-based</p>
+      <h1>CapKV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Most attention-based methods here ask "how much attention has this
+        token actually received?" CapKV asks a subtly different question:
+        if this token were removed, how much unique, query-relevant
+        information would the remaining cache lose? It scores tokens with a
+        ridge-regression leverage score over their value vectors, not a
+        running attention tally.
+      </p>
+
+      <h2>Two ingredients: relevance, then leverage</h2>
+      <p>
+        CapKV's score has two parts that get multiplied together. The
+        first is a query-relevance weight, <code>w_i</code>: how well does
+        this token's key align with what a future query is likely to look
+        like? Since future queries don't exist yet at scoring time, CapKV
+        borrows a trick from kvpress's own <code>ExpectedAttentionPress</code>:
+        project the sequence's hidden states into query-space
+        <em>before</em> rotary position embeddings are applied, rotate that
+        by an <em>averaged</em> rotation matrix built from the next
+        <code>n_future_positions</code> (default 512) RoPE angles rather
+        than any single real position, then mean-pool the result over the
+        whole sequence into one anchor vector per head. <code>w_i</code>
+        is <code>exp(tau * cosine_similarity(key_i, anchor))</code>, with a
+        numerically-stable max-shift before the exponential.
+      </p>
+      <p>
+        The second ingredient is a leverage score. Treat each token's
+        value vector <code>v_i</code> as a proxy for the direction it
+        contributes to future outputs. Build a per-head "capacity matrix"
+        <code>A = I + Σ w_i v_i v_i^T</code>: a ridge-regularized (the
+        identity term is the regularizer) second-moment matrix of every
+        token's value vector, weighted by its own relevance. Score token
+        <em>i</em> by <code>s_i = w_i * v_i^T A^{-1} v_i</code>, which is
+        exactly the diagonal of what's called the "hat matrix" in ridge
+        regression: it measures how much token <em>i</em>'s own value
+        vector points somewhere the rest of the weighted cache doesn't
+        already cover. A token whose value looks like everyone else's
+        contributes little leverage even if it's individually relevant; a
+        token that's both relevant <em>and</em> geometrically distinct from
+        the pack scores highest.
+      </p>
+      <p>
+        This is solved once per KV head via a real matrix inversion
+        (<code>torch.linalg.solve</code>), not computed per token in
+        isolation, which is worth dwelling on: unlike a per-key norm or a
+        per-token attention sum, a leverage score is a property of a token
+        <em>relative to the whole retained set</em>. Evict a different set
+        of tokens and every remaining token's leverage score changes,
+        because the matrix <code>A</code> itself changes. The first
+        <code>n_sink</code> tokens (4 by default) skip this computation
+        entirely and are just forced to the top of the ranking, the same
+        "always keep the earliest few tokens" idea
+        <a href="streaming-llm.html">StreamingLLM</a> uses, here acting as
+        a floor under a much more elaborate score rather than the whole
+        rule.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Double-bordered tokens are the sink, ranked above every other score
+        so it's the last thing cut when the ratio gets aggressive. Raising
+        <code>tau</code> sharpens the relevance weighting, concentrating it
+        onto whichever tokens best match the synthetic query anchor.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured, and simplified on purpose.</strong>
+        A real leverage score can't be faithfully decomposed per token in a
+        browser demo, it's a joint property of every retained token's value
+        vector at once, computed by inverting a matrix that changes
+        whenever the retained set changes. This demo separates the two
+        real ingredients instead: a synthetic query-relevance weight
+        (<code>tau</code>-controlled, matching the real <code>w_i</code>
+        formula) multiplied by a synthetic "value distinctiveness" stand-in,
+        which shows the shape of the idea without claiming to reproduce the
+        actual matrix math.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Leverage scoring directly targets a failure mode attention-tally
+        methods can miss: redundancy. If ten cached tokens all carry
+        nearly the same information, a method that sums up attention may
+        rate all ten as important and keep all ten, while a leverage-aware
+        score recognizes that after keeping the first one or two, the rest
+        add little marginal information and should rank lower. The
+        relevance weighting on top means it isn't just deduplicating
+        blindly, it still favors tokens a future query is likely to
+        actually want, and by inheriting Expected Attention's future-query
+        anchor trick, it never needs a real query at scoring time. The
+        cost is a full matrix inversion per head every time the cache gets
+        scored, real compute overhead beyond what a dot product or a norm
+        costs; this page doesn't have a benchmarked number for that
+        overhead to cite, so treat it as a structural cost to be aware of
+        rather than a measured one. And because leverage is a joint
+        property of the whole candidate set rather than a fixed per-token
+        number, a token's score depends on exactly which other tokens
+        happen to be in the pool at scoring time, which makes CapKV's
+        behavior less directly interpretable than "this token has a small
+        norm" or "this token got little attention."
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>CapPress</code>, a subclass of
+        <code>ScorerPress</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/cap_press.py" target="_blank" rel="noopener">cap_press.py</a>.
+        kvpress's docstring names the source paper as arXiv 2604.25975;
+        checking that identifier independently turns up
+        <a href="https://arxiv.org/abs/2604.25975" target="_blank" rel="noopener">Yang, Tang, Zhen, Lv, "Rethinking KV Cache Eviction via a Unified Information-Theoretic Objective," 2026</a>,
+        which frames CapKV as one instance of a broader
+        information-theoretic reformulation of KV eviction under
+        linear-Gaussian attention assumptions. The algorithm description
+        above is drawn from kvpress's own detailed docstring rather than
+        the paper's full text, so treat the paper attribution as confirmed
+        but any claims beyond what's quoted from kvpress's docstring as
+        unverified.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeCapKV(tokens, params) {
+      const N = tokens.length;
+      const nSink = Math.min(4, N - 1);
+
+      // Synthetic query-key alignment in [-1, 1], standing in for
+      // cosine_similarity(key_i, future-query anchor).
+      const align = tokens.map((tok, i) => seeded(tok + i + "capkv-align") * 2 - 1);
+      // Synthetic "value distinctiveness", standing in for the leverage
+      // contribution a real capacity-matrix inversion would produce.
+      const distinctive = tokens.map((tok, i) => seeded(tok + i + "capkv-distinct"));
+
+      const logits = align.map((a) => params.tau * a);
+      const maxLogit = Math.max(...logits.slice(nSink));
+      const weight = logits.map((l) => Math.exp(l - maxLogit));
+
+      const score = tokens.map((_, i) => (i < nSink ? 0 : weight[i] * distinctive[i]));
+
+      const tags = new Map();
+      for (let i = 0; i < nSink; i++) tags.set(i, ["sink"]);
+
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = score.map((s, i) => [i < nSink ? Infinity : s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+
+      return { kept, scores: normalize(score), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "CapKV: relevance-weighted, leverage-like score (simplified)",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "tau", label: "tau (relevance sharpness)", min: 1, max: 15, step: 0.5, default: 5, format: (v) => v.toFixed(1) },
+      ],
+      compute: computeCapKV,
+    });
+  </script>
+</body>
+</html>

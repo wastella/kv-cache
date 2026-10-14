@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MergingPress — kv/cache</title>
+  <meta name="description" content="Instead of just deleting an evicted token, fold its value into whichever surviving token looks most like it: MergingPress, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/merging.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/merging.html" />
+  <meta property="og:title" content="MergingPress — kv/cache" />
+  <meta property="og:description" content="Instead of just deleting an evicted token, fold its value into whichever surviving token looks most like it: MergingPress, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="MergingPress — kv/cache" />
+  <meta name="twitter:description" content="Instead of just deleting an evicted token, fold its value into whichever surviving token looks most like it: MergingPress, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / merging</p>
+      <h1>MergingPress</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every eviction method in this catalogue makes the same choice once a
+        token loses: delete it, its value is gone for good. MergingPress
+        wraps any of those scoring methods and changes only what happens to
+        the losers: instead of deleting an evicted token outright, it folds
+        its value into whichever surviving token's key looks most like its
+        own.
+      </p>
+
+      <h2>A wrapper, not its own scorer</h2>
+      <p>
+        MergingPress doesn't decide who gets evicted; it takes any
+        <code>ScorerPress</code> already in this catalogue (SnapKV, Knorm,
+        Expected Attention, anything with a <code>.score()</code>) and runs
+        that press's own top-k logic completely unchanged to pick survivors:
+        <code>n_kept = int(k_len * (1 - compression_ratio))</code>, the same
+        truncating formula every other press here uses. The eviction
+        <em>decision</em> is identical to running that scorer bare. The one
+        thing MergingPress inserts is a single step between deciding who's
+        evicted and physically dropping their rows: a merge.
+      </p>
+      <p>
+        For every evicted token, it finds whichever <em>surviving</em>
+        token has the most cosine-similar key vector, reusing keys the
+        model already computed, no extra forward pass. Two gates decide
+        whether that merge actually happens.
+        <code>similarity_threshold</code> requires the best match to clear
+        a minimum cosine similarity before any merge proceeds (the default,
+        0.0, means every evicted token merges into something).
+        <code>merge_fraction</code> then keeps only the top fraction of
+        evicted tokens, ranked by that similarity; the rest are dropped
+        exactly like ordinary eviction, no merge at all. kvpress's own
+        docstring calls this out as genuinely task-dependent: merging
+        everything (<code>merge_fraction=1.0</code>) wins on retrieval-style
+        tasks, while merging only the most similar 75% wins on extraction.
+      </p>
+      <p>
+        The merge weight blends two things: how similar the two keys are,
+        and how much of the evicted token's value "energy," its L2 norm,
+        there is relative to the target's own value norm, so a token whose
+        value vector is much larger than its target's pulls the blended
+        result further toward itself. Multiple evicted tokens can land on
+        the same survivor; their weighted contributions and the survivor's
+        own original value all get summed and divided by
+        <code>1 + total weight</code>, a running weighted average, not an
+        overwrite. Keys are never touched, only kept keys are gathered,
+        unmodified: most models bake rotary position information into keys,
+        and blending key vectors from different original positions would
+        produce a key that doesn't correspond to any real position. Values
+        don't carry positional information the same way, so blending them
+        is comparatively safe.
+      </p>
+
+      <h2>Where this idea actually comes from</h2>
+      <p>
+        kvpress is upfront about the provenance here: the docstring flags
+        <code>MergingPress</code> with "🤖 automated agent contribution" and
+        describes it as "inspired by" two papers, not a reference
+        implementation of either. <strong>Token Merging</strong> (Bolya et
+        al., ICLR 2023) gradually combines similar tokens in a Vision
+        Transformer to speed up inference, on image patch embeddings, not
+        KV cache entries, and with no eviction at all: every token's
+        information stays somewhere in the merged set.
+        <strong>D2O</strong> (Wan et al., 2024) does target the KV cache and
+        does merge, using a similarity threshold to "re-discriminate the
+        importance of currently discarded tokens, determining whether they
+        should be recalled and merged with similar tokens" back into the
+        live cache, closer in spirit, but D2O's mechanism revives tokens
+        <em>after</em> they've already been evicted, rather than merging at
+        the moment of eviction the way MergingPress does. Treat
+        MergingPress as kvpress's own synthesis of an idea both papers
+        point toward, not a reproduction of either paper's method or
+        reported numbers.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        Adjust the ratio, threshold, and merge fraction and watch which
+        evicted tokens actually get merged, and into whom.
+      </p>
+      <div id="demo"></div>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real key or
+        value vectors behind these tokens. Each token gets a synthetic key
+        "direction" and value "norm" deterministically from its text, and
+        the underlying importance score standing in for the wrapped
+        scorer's <code>.score()</code> is synthetic too. The merge
+        mechanics, cosine-similarity target selection, the two gates, the
+        norm-weighted blend, mirror kvpress's actual <code>merge()</code>
+        logic; the second gate's cutoff is computed here as a rank over the
+        already-thresholded candidates rather than kvpress's tensor-wide
+        quantile call, which can shift exactly which tokens land right at
+        the fraction boundary.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        MergingPress recovers some of what plain top-k eviction throws away
+        for free: keys are already computed, so cosine similarity and a
+        weighted sum cost far less than another forward pass, and it
+        composes with literally any scorer in this catalogue since it only
+        changes what happens after the cut, not the cut itself. The
+        tradeoff is that "does this help" is inherently task-dependent, by
+        kvpress's own account merge_fraction pulls in opposite directions
+        for retrieval versus extraction, so there's no single default
+        that's obviously right for every workload. Keys stay unmodified,
+        so merging values doesn't solve the separate problem of surviving
+        tokens carrying position gaps where evicted neighbors used to be;
+        whatever position-management strategy a pipeline already needs
+        (see the <a href="streaming-llm.html">StreamingLLM</a> page's note
+        on <code>KeyRerotationPress</code>) is still needed independently.
+        And because this is an agent-contributed synthesis rather than a
+        peer-reviewed paper's own method, there's no published benchmark
+        number to point to the way there is for PyramidKV or GQA.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>MergingPress</code>, a wrapper
+        taking any <code>ScorerPress</code> via its <code>press</code>
+        argument. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/merging_press.py" target="_blank" rel="noopener">merging_press.py</a>.
+        Papers it's inspired by:
+        <a href="https://arxiv.org/abs/2210.09461" target="_blank" rel="noopener">Bolya, Fu, Dai, Zhang, Feichtenhofer, Hoffman, "Token Merging: Your ViT But Faster," ICLR 2023</a>
+        and
+        <a href="https://arxiv.org/abs/2406.13035" target="_blank" rel="noopener">Wan, Wu, Zhang, Xin, Tao, Zhu, Wang, Luo, Xiong, Wang, Zhang, "D2O: Dynamic Discriminative Operations for Efficient Long-Context Inference of Large Language Models," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function createMergingDemo({ root, tokens }) {
+      const N = tokens.length;
+      const params = { ratio: 0.5, simThreshold: 0.0, mergeFraction: 1.0 };
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("MergingPress: merge-on-evict")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("kept, unchanged")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch", style: "box-shadow: inset 0 0 0 2px var(--ink);" }), document.createTextNode("kept, absorbed a merge")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted", style: "border-style:dotted;" }), document.createTextNode("evicted, value merged away")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted" }), document.createTextNode("evicted, dropped (no merge)")]));
+      root.appendChild(legend);
+
+      const grid = el("div", { class: "token-grid" });
+      root.appendChild(grid);
+      const tokenEls = tokens.map((tok) => {
+        const t = el("span", { class: "token" }, [document.createTextNode(tok)]);
+        grid.appendChild(t);
+        return t;
+      });
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const controls = [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: params.ratio, format: (v) => Math.round(v * 100) + "%" },
+        { key: "simThreshold", label: "similarity threshold", min: 0, max: 0.95, step: 0.05, default: params.simThreshold, format: (v) => v.toFixed(2) },
+        { key: "mergeFraction", label: "merge fraction", min: 0.05, max: 1.0, step: 0.05, default: params.mergeFraction, format: (v) => Math.round(v * 100) + "%" },
+      ];
+      controls.forEach((c, idx) => {
+        const inputId = `merging-${c.key}-${idx}`;
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(c.format(c.default))]);
+        const labelRow = el("label", { for: inputId }, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", id: inputId, min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = c.format(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const mergeLog = el("div", { class: "calc-steps" });
+      root.appendChild(mergeLog);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statKept = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("tokens kept")]),
+      ]);
+      const statMerged = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("merged into a survivor")]),
+      ]);
+      const statDropped = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("dropped, no merge")]),
+      ]);
+      statsWrap.appendChild(statKept);
+      statsWrap.appendChild(statMerged);
+      statsWrap.appendChild(statDropped);
+      root.appendChild(statsWrap);
+
+      function keyAngle(tok, i) { return seeded(tok + i + "mergekey") * Math.PI * 2; }
+      function valueNorm(tok, i) { return 0.3 + seeded(tok + i + "mergeval") * 1.7; }
+      function importance(tok, i) { return seeded(tok + i + "mergeimportance"); }
+
+      const angle = tokens.map(keyAngle);
+      const vnorm = tokens.map(valueNorm);
+      const score = tokens.map(importance);
+
+      function calcStep(label, expr, result) {
+        return el("div", { class: "calc-step" }, [
+          el("span", { class: "calc-label" }, [document.createTextNode(label)]),
+          el("span", { class: "calc-expr" }, [document.createTextNode(expr)]),
+          el("span", { class: "calc-result" }, [document.createTextNode(result)]),
+        ]);
+      }
+
+      function render() {
+        // Real MergingPress: n_kept = int(k_len * (1 - compression_ratio)),
+        // the same truncating formula as its wrapped ScorerPress.
+        const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+        const ranked = score.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+        const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+        const evicted = [];
+        for (let i = 0; i < N; i++) if (!kept.has(i)) evicted.push(i);
+
+        // Find each evicted token's most cosine-similar surviving key.
+        const candidates = evicted.map((ei) => {
+          let best = -Infinity, bestJ = null;
+          kept.forEach((ki) => {
+            const sim = Math.cos(angle[ei] - angle[ki]);
+            if (sim > best) { best = sim; bestJ = ki; }
+          });
+          return { ei, target: bestJ, sim: best };
+        });
+
+        // Gate 1: similarity_threshold.
+        let eligible = candidates.filter((m) => m.sim >= params.simThreshold);
+
+        // Gate 2: merge_fraction — keep only the top fraction by similarity.
+        eligible.sort((a, b) => b.sim - a.sim);
+        const nMerge = Math.round(eligible.length * params.mergeFraction);
+        const finalMerges = eligible.slice(0, nMerge);
+
+        finalMerges.forEach((m) => {
+          const simPos = Math.max(0, m.sim);
+          m.weight = simPos * (vnorm[m.ei] / (vnorm[m.ei] + vnorm[m.target] + 1e-6));
+        });
+
+        const mergedSources = new Set(finalMerges.map((m) => m.ei));
+        const mergedTargets = new Set(finalMerges.map((m) => m.target));
+
+        tokenEls.forEach((tEl, i) => {
+          tEl.classList.remove("evicted");
+          tEl.style.boxShadow = "";
+          tEl.style.borderStyle = "";
+          tEl.style.borderColor = "";
+          if (kept.has(i)) {
+            if (mergedTargets.has(i)) tEl.style.boxShadow = "inset 0 0 0 2px var(--ink)";
+          } else {
+            tEl.classList.add("evicted");
+            if (mergedSources.has(i)) {
+              tEl.style.borderStyle = "dotted";
+              tEl.style.borderColor = "var(--evict)";
+            }
+          }
+        });
+
+        mergeLog.innerHTML = "";
+        const byEvictIdx = finalMerges.slice().sort((a, b) => a.ei - b.ei);
+        if (byEvictIdx.length === 0) {
+          mergeLog.appendChild(calcStep("no merges", "every evicted token failed one of the two gates", "dropped"));
+        } else {
+          byEvictIdx.forEach((m) => {
+            mergeLog.appendChild(
+              calcStep(
+                `"${tokens[m.ei]}"`,
+                `→ merges into "${tokens[m.target]}" · sim ${m.sim.toFixed(2)}`,
+                `w=${m.weight.toFixed(2)}`
+              )
+            );
+          });
+        }
+
+        statKept.firstChild.textContent = `${kept.size} / ${N}`;
+        statMerged.firstChild.textContent = String(finalMerges.length);
+        statDropped.firstChild.textContent = String(evicted.length - finalMerges.length);
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createMergingDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

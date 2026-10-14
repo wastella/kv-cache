@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RestoreKV — kv/cache</title>
+  <meta name="description" content="Instead of only choosing what to evict, spend part of the same budget on a handful of learned tokens trained to restore what a full cache would have known: RestoreKV, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/restorekv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/restorekv.html" />
+  <meta property="og:title" content="RestoreKV — kv/cache" />
+  <meta property="og:description" content="Instead of only choosing what to evict, spend part of the same budget on a handful of learned tokens trained to restore what a full cache would have known: RestoreKV, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="RestoreKV — kv/cache" />
+  <meta name="twitter:description" content="Instead of only choosing what to evict, spend part of the same budget on a handful of learned tokens trained to restore what a full cache would have known: RestoreKV, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / learned</p>
+      <h1>RestoreKV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> <a href="kvzip.html">KVzip</a> decides what to evict by
+        reconstruction. RestoreKV keeps that exact evictor, but spends a
+        small slice of the same cache budget on something new: a handful of
+        learned "restore" cache entries, produced by a one-time LoRA-adapted
+        pass over the full context, trained to approximate what a full,
+        uncompressed cache would have known. It's not a scoring rule at
+        all, it's a trained recovery mechanism sitting alongside one.
+      </p>
+
+      <h2>Budget-matched, not budget-additive</h2>
+      <p>
+        Before eviction happens, RestoreKV runs one extra forward pass: a
+        fixed number of learned "restore tokens" (8 per kvpress's adapters)
+        attend over the entire, still-uncompressed KV cache in a single
+        pass with a LoRA adapter enabled, and the K/V those restore tokens
+        produce gets appended to the cache. That LoRA adapter is active for
+        this one pass only; the base model's own forward passes never see
+        it. Only the restore token embeddings and the LoRA weights are
+        trained, roughly 0.4% of the model's parameters, and they're
+        trained by self-distillation: the restore-augmented, compressed
+        model is pushed to match what a full, uncompressed cache would have
+        produced for the same context.
+      </p>
+      <p>
+        Critically, this doesn't add to the cache budget, it's carved out
+        of it. kvpress's <code>compress_post</code> temporarily inflates the
+        compression ratio it hands to KVzip's evictor by exactly
+        <code>num_restore_tokens / context_length</code>, evicts more of
+        the original context to compensate, then appends the <code>n</code>
+        restore entries back in. The arithmetic works out so the total
+        number of cache slots after both steps, real context tokens plus
+        restore entries, matches what plain KVzip would have used at the
+        <em>requested</em> ratio. RestoreKV isn't spending extra memory on
+        restoration; it's trading some of the context tokens KVzip would
+        have kept for a few tokens trained to approximate what got lost.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        The token grid below is scored and evicted exactly like the
+        <a href="kvzip.html">KVzip</a> demo, reconstruction score, forced
+        sink tokens, same budget formula, except the total slot budget is
+        split between real context tokens and a fixed number of restore
+        slots (illustrated below the grid), so fewer of the grid's real
+        tokens survive than plain KVzip would keep at the same ratio.
+      </p>
+      <div class="formula-box">
+        <div class="formula-main" id="rkv-restore-label">restore slots (learned, not real text)</div>
+        <div class="channel-row" style="margin-bottom:0;">
+          <div class="channel-cells" id="rkv-restore-cells"></div>
+        </div>
+        <div class="formula-sub">
+          Filled cells are restore slots actually spent this ratio; hollow
+          ones mean even the (illustrative, scaled-down) restore budget
+          didn't fully fit. These aren't tokens from the sample text, they're
+          produced by the one-time LoRA pass described above.
+        </div>
+      </div>
+      <div class="note">
+        <strong>Simulated, not measured, and this one isn't even a
+        formula.</strong> There's no LoRA pass and no trained restore
+        embeddings here, this is a fixed illustrative count (2, scaled down
+        from kvpress's real 8 so the arithmetic stays legible against this
+        demo's tiny sample). RestoreKV's actual restoration mechanism is
+        learned end to end and can't be reduced to a scoring rule the way
+        the rest of this catalogue can; what's simulated here is the
+        <em>bookkeeping</em> that carves restore slots out of the shared
+        budget, not the restoration itself.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        On Qwen3-4B, the paper reports improvements in 59 of 60 paired,
+        budget-matched settings against baselines evicting at the same
+        total cache size, and cites one baseline going from 38.2 to 73.2
+        accuracy at a 5% budget on a standard benchmark once RestoreKV's
+        restoration is added on top of it. The core idea, being budget-
+        matched rather than budget-additive, means the comparison to a
+        plain evictor is fair: RestoreKV isn't winning by secretly using
+        more memory. The cost is that this is no longer a training-free,
+        drop-in method the way most of this catalogue is: it requires a
+        model-specific adapter trained in advance, kvpress currently ships
+        adapters (via Hugging Face, loaded automatically from the model
+        name) for exactly two base models, Llama-3.1-8B-Instruct and
+        Qwen3-8B, so it doesn't generalize to an arbitrary checkpoint the
+        way <a href="knorm.html">Knorm</a> or <a href="keydiff.html">KeyDiff</a>
+        do. It also inherits every cost KVzip already pays (the 2-3x
+        reconstruction-pass overhead) and adds one more forward pass, the
+        restore-token encoding, on top.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>RestoreKVPress</code>, a subclass
+        of <code>KVzipPress</code> that overrides <code>compress_post</code>
+        to run the restore pass and inflate the ratio before delegating
+        back to KVzip's own eviction logic. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/restorekv_press.py" target="_blank" rel="noopener">restorekv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2608.01247" target="_blank" rel="noopener">Baek, Shin, Kong, "RestoreKV: Recovering Full-Cache Behavior Under Aggressive Query-Agnostic KV Cache Eviction," 2026</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const RKV_N_SINK = 4;
+    const RKV_RESTORE_N = 2; // illustrative; kvpress's real adapters use 8
+
+    const restoreCellsEl = document.getElementById("rkv-restore-cells");
+    const restoreLabelEl = document.getElementById("rkv-restore-label");
+
+    function computeRestoreKV(tokens, params) {
+      const N = tokens.length;
+      const nSink = Math.min(RKV_N_SINK, N);
+
+      // Same simulated reconstruction score as the KVzip demo.
+      const score = tokens.map((tok, i) => (i < nSink ? 1.0 : seeded(tok + i + "rkv")));
+
+      // Same total-budget formula as KVzipPress.compress_post.
+      const pruned = Math.floor(N * params.ratio);
+      const totalBudget = Math.max(0, N - pruned);
+
+      // RestoreKV carves RKV_RESTORE_N of that budget out for restore
+      // slots before the KVzip evictor fills the rest with real context
+      // tokens (see compress_post's ratio inflation by n/context_length,
+      // which nets out to exactly this split).
+      const restoreShown = Math.min(RKV_RESTORE_N, totalBudget);
+      const contextBudget = totalBudget - restoreShown;
+
+      const ranked = score.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, contextBudget).map((p) => p[1]));
+
+      const tags = new Map();
+      for (let i = 0; i < nSink; i++) tags.set(i, ["sink"]);
+
+      if (restoreCellsEl) {
+        restoreCellsEl.innerHTML = "";
+        for (let i = 0; i < RKV_RESTORE_N; i++) {
+          restoreCellsEl.appendChild(el("span", { class: i < restoreShown ? "channel-cell" : "channel-cell pruned" }));
+        }
+      }
+      if (restoreLabelEl) {
+        restoreLabelEl.textContent = `restore slots spent: ${restoreShown} / ${RKV_RESTORE_N} (illustrative count)`;
+      }
+
+      return { kept, scores: normalize(score), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "RestoreKV: same reconstruction score as KVzip, budget shared with restore slots",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeRestoreKV,
+    });
+  </script>
+</body>
+</html>

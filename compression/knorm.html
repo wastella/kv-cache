@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Knorm — kv/cache</title>
-  <meta name="description" content="Score cached keys by nothing but their own L2 norm — no attention required: Knorm, interactively explained." />
+  <meta name="description" content="Score cached keys by nothing but their own L2 norm, no attention required: Knorm, interactively explained." />
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
@@ -13,14 +13,14 @@
   <meta property="og:site_name" content="kv/cache" />
   <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/knorm.html" />
   <meta property="og:title" content="Knorm — kv/cache" />
-  <meta property="og:description" content="Score cached keys by nothing but their own L2 norm — no attention required: Knorm, interactively explained." />
+  <meta property="og:description" content="Score cached keys by nothing but their own L2 norm, no attention required: Knorm, interactively explained." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Knorm — kv/cache" />
-  <meta name="twitter:description" content="Score cached keys by nothing but their own L2 norm — no attention required: Knorm, interactively explained." />
+  <meta name="twitter:description" content="Score cached keys by nothing but their own L2 norm, no attention required: Knorm, interactively explained." />
   <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <link rel="stylesheet" href="../css/style.css" />
 </head>
@@ -43,8 +43,8 @@
       <p class="kicker"><a href="index.html" class="quiet">compression</a> / norm-based</p>
       <h1>Knorm</h1>
       <p class="lede">
-        Most methods in this catalogue need at least one attention weight to
-        decide what matters. Knorm doesn't — it scores each cached key by
+        <strong>TL;DR:</strong> Most methods in this catalogue need at least one attention weight to
+        decide what matters. Knorm doesn't: it scores each cached key by
         nothing but the key vector's own length, and evicts the ones that are
         unusually long.
       </p>
@@ -56,7 +56,7 @@
         across several models and layers. The correlation was strong and
         consistent: keys with a <strong>low</strong> L2 norm tend to receive
         <strong>high</strong> attention later on, and high-norm keys tend to
-        be mostly ignored. That's a strange thing to be true — a key's norm
+        be mostly ignored. That's a strange thing to be true: a key's norm
         is fixed the moment it's computed, before any query has looked at it,
         with no dependence on the current decoding step or anything
         attention-related at all.
@@ -66,15 +66,15 @@
         <code>score = -‖k‖₂</code>. Since kvpress keeps the
         highest-scoring tokens during compression, a low norm produces a
         less negative (i.e. higher) score, so low-norm keys survive and
-        high-norm keys are evicted first. There's no forward-looking
-        attention matrix, no running accumulation, no observation window —
-        just a norm, computed once per cached key.
+        high-norm keys are evicted first. It never looks at an attention
+        matrix, never accumulates anything across steps, and doesn't need
+        an observation window. Just the norm, computed once per cached key.
       </p>
 
       <h2>Try it</h2>
       <div id="demo"></div>
       <p class="muted" style="font-size:12.5px;">
-        Shade tracks each token's simulated key-vector norm, inverted —
+        Shade tracks each token's simulated key-vector norm, inverted,
         the darkest tokens have the smallest norm and are the ones this
         method is most confident about keeping.
       </p>
@@ -89,10 +89,10 @@
       <p>
         Knorm is about as cheap as content-aware compression gets: the key
         vectors already exist as a byproduct of the model doing its normal
-        work, so measuring their length adds no extra forward passes, no
-        held-out queries, and no per-step bookkeeping — useful when the
-        scoring itself has to be almost free. The tradeoff is that it's a
-        purely correlational shortcut — norm
+        work, so measuring their length is essentially free: no extra
+        forward passes, held-out queries, or per-step bookkeeping. That
+        matters when the scoring itself has to cost almost nothing. The
+        tradeoff is that it's a purely correlational shortcut: norm
         predicts attention on average, but it can't tell "predictably
         important" apart from "surprisingly important right now" the way a
         method that actually looks at attention can. In practice its
@@ -112,7 +112,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -121,12 +121,14 @@
   <script>
     function computeKnorm(tokens, params) {
       const N = tokens.length;
-      // Synthetic per-token key-vector norm — a property of the token
+      // Synthetic per-token key-vector norm: a property of the token
       // alone, not of attention or position. Real KnormPress scores as
       // -||k||_2 and keeps the highest-scoring (i.e. lowest-norm) tokens.
       const norm = tokens.map((tok, i) => 0.15 + seeded(tok + i + "norm") * 0.85);
       const keepScore = norm.map((n) => -n);
-      const budget = Math.max(1, Math.round(N * (1 - params.ratio)));
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
       const ranked = keepScore.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
       const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
       return { kept, scores: normalize(keepScore) };
@@ -135,7 +137,7 @@
     createCompressionDemo({
       root: document.getElementById("demo"),
       tokens: SAMPLE_TOKENS,
-      label: "Knorm — key-vector L2 norm (inverted)",
+      label: "Knorm: key-vector L2 norm (inverted)",
       controls: [
         { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
       ],

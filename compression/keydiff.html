@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KeyDiff — kv/cache</title>
+  <meta name="description" content="Score each cached key by how closely it points in the same direction as the average key, and evict the ones that look the most typical: KeyDiff, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/keydiff.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/keydiff.html" />
+  <meta property="og:title" content="KeyDiff — kv/cache" />
+  <meta property="og:description" content="Score each cached key by how closely it points in the same direction as the average key, and evict the ones that look the most typical: KeyDiff, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="KeyDiff — kv/cache" />
+  <meta name="twitter:description" content="Score each cached key by how closely it points in the same direction as the average key, and evict the ones that look the most typical: KeyDiff, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / similarity-based</p>
+      <h1>KeyDiff</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> <a href="knorm.html">Knorm</a> scores a cached key by its own
+        length. KeyDiff scores it by its <em>direction</em>: how closely it
+        points the same way as the "average" key currently in the cache.
+        Keys that look like everyone else are the ones with the least to
+        lose by leaving; keys that point somewhere distinctive are kept.
+        Like Knorm, it never touches an attention matrix.
+      </p>
+
+      <h2>Distinctive keys, not big keys</h2>
+      <p>
+        Park et al. observed that geometrically distinctive keys, ones whose
+        direction stands apart from the rest of the cache, tend to earn high
+        attention scores later on. A key that points the same way as most of
+        its neighbors, on the other hand, is redundant almost by definition:
+        several other cached keys already carry roughly the same directional
+        information, so losing any one of them costs little.
+      </p>
+      <p>
+        KeyDiff turns that into a score without ever computing attention.
+        First it builds an <strong>anchor</strong>: normalize every cached
+        key to unit length, then average those unit vectors together, which
+        gives the mean direction the whole cache is currently pointing in.
+        Then each key is scored by <code>-cosine_similarity(key,
+        anchor)</code>, so a key that's well-aligned with the anchor scores
+        low (typical, evict first) and a key that points somewhere else
+        scores high (distinctive, keep). The whole computation is a mean and
+        a batch of cosine similarities over vectors the model already
+        produced, no queries or attention weights required anywhere.
+      </p>
+
+      <h2>What kvpress implements, and what the paper actually does</h2>
+      <p>
+        Worth being upfront about: KeyDiff's original paper runs this
+        scoring rule <strong>block-wise and iteratively</strong>, splitting
+        the sequence into blocks and re-scoring as it goes, rather than
+        computing one global anchor over the whole cache in a single pass.
+        kvpress's <code>KeyDiffPress</code> on its own only does the
+        single-shot, whole-cache version described above; the block-wise
+        iteration is implemented separately, in a wrapper class. To
+        reproduce the paper's actual algorithm, kvpress's own docstring
+        says to compose the two:
+      </p>
+      <p>
+        <code>press = BlockPress(press=KeyDiffPress(compression_ratio=0.x), block_size=N)</code>
+      </p>
+      <p>
+        Used alone, <code>KeyDiffPress</code> is the scoring rule the paper
+        is built on, not a drop-in reproduction of the paper's published
+        numbers.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Shade tracks how distinctive each token's simulated key direction is
+        from the average. The darkest tokens point the furthest from
+        "typical" and are the ones this method is most confident about
+        keeping.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> Each token here gets a
+        synthetic low-dimensional "key vector" derived deterministically
+        from its text, standing in for the real head-sized key vector a
+        forward pass would produce. The anchor and cosine-similarity math
+        applied to it is the real KeyDiffPress rule.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        The paper reports a performance gap under 0.04% against a full,
+        uncompressed cache at an 8K token budget on LongBench with Llama
+        models, and up to a 30% cut in end-to-end inference latency
+        compared to other token-eviction methods it was benchmarked
+        against. Because scoring never looks at an attention matrix, it's
+        also compatible with kernels like FlashAttention that never
+        materialize one in the first place, which some attention-based
+        methods in this catalogue can't say. The tradeoff is the same one
+        Knorm carries: this is a geometric correlation, not a measurement of
+        what any particular query actually needed, so it can't distinguish
+        "usually irrelevant" from "irrelevant so far, about to matter." And
+        without <code>BlockPress</code> wrapped around it, kvpress's version
+        is a simplification of what the paper evaluated, not a direct
+        reproduction.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>KeyDiffPress</code>, whose
+        <code>score()</code> is <code>-F.cosine_similarity(keys,
+        anchor, dim=-1)</code> against an anchor built from
+        <code>F.normalize(keys).mean(dim=2)</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/keydiff_press.py" target="_blank" rel="noopener">keydiff_press.py</a>,
+        and the block-wise wrapper referenced above:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/block_press.py" target="_blank" rel="noopener">block_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2504.15364" target="_blank" rel="noopener">Park, Jones, Morse, Goel, Lee, Lott, "KeyDiff: Key Similarity-Based KV Cache Eviction for Long-Context LLM Inference in Resource-Constrained Environments," NeurIPS 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeKeyDiff(tokens, params) {
+      const N = tokens.length;
+      const DIM = 6;
+
+      // Synthetic per-token key vector: a handful of components seeded from
+      // the token's text, standing in for a real head_dim-sized key vector.
+      function keyVec(tok, i) {
+        const v = [];
+        for (let d = 0; d < DIM; d++) v.push(seeded(tok + i + "kd" + d) * 2 - 1);
+        return v;
+      }
+      function norm(v) {
+        return Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1e-9;
+      }
+      function unit(v) {
+        const n = norm(v);
+        return v.map((x) => x / n);
+      }
+      function cosineSim(a, b) {
+        const dot = a.reduce((s, x, d) => s + x * b[d], 0);
+        return dot / (norm(a) * norm(b));
+      }
+
+      const keys = tokens.map((tok, i) => unit(keyVec(tok, i)));
+      // anchor = F.normalize(keys, dim=-1).mean(dim=2): the mean unit
+      // direction across every key currently in the cache.
+      const anchor = keys[0].map((_, d) => keys.reduce((s, k) => s + k[d], 0) / N);
+
+      // Real KeyDiffPress: score = -cosine_similarity(keys, anchor).
+      const keepScore = keys.map((k) => -cosineSim(k, anchor));
+
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = keepScore.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(keepScore) };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "KeyDiff: cosine distance from the average key direction",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeKeyDiff,
+    });
+  </script>
+</body>
+</html>

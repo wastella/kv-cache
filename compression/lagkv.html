@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LagKV — kv/cache</title>
+  <meta name="description" content="No attention weights at all: score each partition of the cache by how it compares to the partition right after it: LagKV, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/lagkv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/lagkv.html" />
+  <meta property="og:title" content="LagKV — kv/cache" />
+  <meta property="og:description" content="No attention weights at all: score each partition of the cache by how it compares to the partition right after it: LagKV, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="LagKV — kv/cache" />
+  <meta name="twitter:description" content="No attention weights at all: score each partition of the cache by how it compares to the partition right after it: LagKV, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / partition-based</p>
+      <h1>LagKV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every attention-based method in this catalogue needs an actual
+        attention weight from somewhere, a window, a decode step, an
+        accumulated total. LagKV needs none of that: it never looks at
+        attention at all. It slices the cache into fixed-size partitions
+        and scores each one purely by comparing it to the partition that
+        comes right after it.
+      </p>
+
+      <h2>Comparing the cache to itself</h2>
+      <p>
+        Liang, Zhang, Li, and Li's premise is that a token's key and value
+        vectors already carry enough signal to judge importance, without
+        ever consulting how a query actually attended to them. That makes
+        LagKV attention-free in a stronger sense than a method like Knorm:
+        Knorm still needs a single scalar (a key's norm) computed once from
+        that key alone. LagKV goes further and scores each token
+        <em>relative to a whole different group of other tokens</em>, the
+        partition right after it in sequence order, what the paper calls
+        "lag-relative information."
+      </p>
+      <p>
+        The mechanics: the first <code>n_sink</code> tokens (4 by default)
+        get a fixed top score, sink-style. The rest of the sequence, minus a
+        trailing "recent" region that gets the same fixed top score, gets sliced into
+        fixed-size partitions of <code>lag_size</code> tokens (128 by
+        default). For every partition except the last, LagKV looks one
+        partition ahead: it takes the per-channel min and max that the
+        <em>next</em> partition establishes for the key and value vectors,
+        rescales every token in the <em>current</em> partition against that
+        range, and measures how inconsistently each token's rescaled value
+        spreads across channels. A token that lands consistently within
+        the next partition's typical range looks unremarkable; one whose
+        rescaled profile swings widely across channels stands out, and
+        gets ranked higher within its own partition. Key-side and
+        value-side versions of this score are averaged together.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        Each partition (outlined box) is scored against the next partition
+        to its right, never against itself. The sink and the trailing
+        window score above every middle-partition token, so they're the
+        first to fill the budget; push the ratio hard enough and even they
+        start getting cut.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Darker tokens stood out more from the next partition's range and
+        rank higher within their own partition. Sink tokens (double
+        border) and the trailing window (colored border) get the same
+        visual convention used for StreamingLLM's sink and SnapKV's
+        observation window elsewhere in this catalogue, though here it
+        marks a scoring edge rather than an unconditional guarantee.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> Real keys and values have
+        a head_dim's worth of channels (64 or more); this demo gives each
+        token 4 synthetic channels, seeded from its text, purely to make
+        the "rescale against the next partition, then measure spread
+        across channels" comparison visible. The ranking logic (rescale,
+        take the spread, rank within the partition) matches kvpress's real
+        <code>LagKVPress._get_states_score()</code>; the exact statistic
+        used for "spread" is simplified here rather than reproduced to the
+        decimal.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Not touching attention at all is a real practical advantage: LagKV
+        doesn't need eager attention output, a held-out observation
+        window, or any per-step bookkeeping, which the paper argues makes
+        it easier to drop into existing serving stacks than attention-based
+        alternatives. On RULER, the paper reports it outperforming SnapKV
+        and StreamingLLM across compression ratios, and on 64-digit
+        passkey retrieval, over 50% better than the attention-based H2O
+        method at matched compression. The tradeoff is exactly what you'd
+        guess from an attention-free method: comparing a partition to its
+        neighbor is a proxy for "this token is unusual relative to what
+        comes next," not a measurement of whether the model actually
+        attended to it, so it can miss tokens that are important for
+        reasons the key/value geometry alone doesn't surface. There's also
+        a real floor on how short a sequence LagKV can act on at all: the
+        code requires at least <code>n_sink + 2 * lag_size</code> tokens
+        before it does any partition-relative scoring; shorter than that,
+        it doesn't compress, regardless of the requested ratio. With the
+        real defaults (n_sink=4, lag_size=128), that's roughly 260 tokens
+        of headroom before LagKV does anything.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>LagKVPress</code>. Its
+        <code>score()</code> reshapes the cache into partitions of
+        <code>lag_size</code>, calls <code>_get_states_score()</code> to
+        rescale each partition against the next one and take a
+        per-channel standard deviation, then (by default,
+        <code>cross_scoring=False</code>) replaces that with each token's
+        rank within its own partition, normalized to <code>[0, 1)</code>.
+        Sink and trailing-window tokens get a score of exactly 1. See the
+        source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/lagkv_press.py" target="_blank" rel="noopener">lagkv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2504.04704" target="_blank" rel="noopener">Liang, Zhang, X. Li, J. Li, "LagKV: Lag-Relative Information of the KV Cache Tells Which Tokens Are Important," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const LAG_CHANNELS = 4;
+
+    // Mirrors LagKVPress.score()'s structure: sink + trailing window
+    // always kept (score 1), everything in between scored by comparing
+    // each partition to the partition immediately after it, then ranked
+    // within its own partition (cross_scoring=False, the real default).
+    function computeLagKV(tokens, nSink, lagSize) {
+      const N = tokens.length;
+
+      const vec = tokens.map((tok, i) => {
+        const v = [];
+        for (let c = 0; c < LAG_CHANNELS; c++) v.push(seeded(tok + i + "lagc" + c) * 2 - 1);
+        return v;
+      });
+
+      const endIdx = nSink + Math.floor((N - nSink) / lagSize) * lagSize;
+      const numFullPartitions = (endIdx - nSink) / lagSize;
+      const tailLen = lagSize + (N - endIdx);
+      const tailStart = N - tailLen;
+
+      const score = new Array(N).fill(1);
+      const tags = new Map();
+      for (let i = 0; i < nSink; i++) tags.set(i, ["sink"]);
+      for (let i = tailStart; i < N; i++) tags.set(i, ["window"]);
+
+      const groups = [];
+      if (nSink > 0) groups.push({ kind: "sink", start: 0, end: nSink });
+
+      for (let p = 0; p < numFullPartitions - 1; p++) {
+        const start = nSink + p * lagSize;
+        const end = start + lagSize;
+        const refStart = end;
+        const refEnd = end + lagSize;
+        groups.push({ kind: "scored", start, end });
+
+        const minR = new Array(LAG_CHANNELS).fill(Infinity);
+        const maxR = new Array(LAG_CHANNELS).fill(-Infinity);
+        for (let j = refStart; j < refEnd; j++) {
+          for (let c = 0; c < LAG_CHANNELS; c++) {
+            minR[c] = Math.min(minR[c], vec[j][c]);
+            maxR[c] = Math.max(maxR[c], vec[j][c]);
+          }
+        }
+        const raw = [];
+        for (let i = start; i < end; i++) {
+          const norm = [];
+          for (let c = 0; c < LAG_CHANNELS; c++) {
+            const range = maxR[c] - minR[c] || 1e-9;
+            norm.push((vec[i][c] - minR[c]) / range);
+          }
+          const mean = norm.reduce((a, b) => a + b, 0) / LAG_CHANNELS;
+          const variance = norm.reduce((a, b) => a + (b - mean) ** 2, 0) / LAG_CHANNELS;
+          raw.push(Math.sqrt(variance));
+        }
+        // cross_scoring=False: replace the raw spread with each token's
+        // rank within the partition, normalized to [0, 1).
+        const rankedIdx = raw.map((s, idx) => [s, idx]).sort((a, b) => a[0] - b[0]);
+        rankedIdx.forEach(([, idx], rank) => {
+          score[start + idx] = rank / lagSize;
+        });
+      }
+
+      groups.push({ kind: "tail", start: tailStart, end: N });
+
+      return { score, tags, groups };
+    }
+
+    function createLagKVDemo({ root, tokens }) {
+      const params = { ratio: 0.5, nSink: 2, lagSize: 4 };
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("LagKV: each partition scored against the next one")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("kept in cache")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted" }), document.createTextNode("evicted")]));
+      root.appendChild(legend);
+
+      const groupsWrap = el("div", { class: "lag-groups" });
+      root.appendChild(groupsWrap);
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const controls = [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "nSink", label: "sink size", min: 0, max: 4, step: 1, default: 2 },
+        { key: "lagSize", label: "partition (lag) size", min: 2, max: 6, step: 1, default: 4 },
+      ];
+      controls.forEach((c, idx) => {
+        const inputId = `lag-${c.key}-${idx}`;
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(c.format ? c.format(c.default) : String(c.default))]);
+        const labelRow = el("label", { for: inputId }, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", id: inputId, min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = c.format ? c.format(v) : String(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statKept = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("tokens kept")]),
+      ]);
+      const statPartitions = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("scored partitions")]),
+      ]);
+      const statRatio = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("cache size")]),
+      ]);
+      statsWrap.appendChild(statKept);
+      statsWrap.appendChild(statPartitions);
+      statsWrap.appendChild(statRatio);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const N = tokens.length;
+        const nSink = Math.round(params.nSink);
+        const lagSize = Math.round(params.lagSize);
+        const { score, tags, groups } = computeLagKV(tokens, nSink, lagSize);
+        const scaled = normalize(score);
+
+        // Real kvpress computes n_kept via Python's int(), which truncates
+        // rather than rounds; Math.floor matches that for non-negative values.
+        const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+        const ranked = score.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+        const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+
+        groupsWrap.innerHTML = "";
+        let scoredCount = 0;
+        groups.forEach((g, gi) => {
+          if (g.kind === "scored") scoredCount++;
+          const box = el("div", { class: "lag-group " + g.kind });
+          const labelText =
+            g.kind === "sink" ? "sink (always kept)" :
+            g.kind === "tail" ? "trailing window (always kept)" :
+            "partition " + scoredCount;
+          box.appendChild(el("div", { class: "lag-group-label" }, [document.createTextNode(labelText)]));
+          const tokWrap = el("div", { class: "lag-group-tokens" });
+          for (let i = g.start; i < g.end; i++) {
+            const t = el("span", { class: "token" }, [document.createTextNode(tokens[i])]);
+            const isKept = kept.has(i);
+            t.classList.toggle("evicted", !isKept);
+            (tags.get(i) || []).forEach((tag) => t.classList.add(tag));
+            if (isKept) t.style.background = `rgba(23, 22, 15, ${0.03 + scaled[i] * 0.12})`;
+            tokWrap.appendChild(t);
+          }
+          box.appendChild(tokWrap);
+          groupsWrap.appendChild(box);
+          if (g.kind === "scored") {
+            groupsWrap.appendChild(el("div", { class: "lag-arrow" }, [document.createTextNode("→")]));
+          }
+        });
+
+        statKept.firstChild.textContent = `${kept.size} / ${N}`;
+        statPartitions.firstChild.textContent = String(scoredCount);
+        statRatio.firstChild.textContent = Math.round((kept.size / N) * 100) + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createLagKVDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

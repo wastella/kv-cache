@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChunkKV — kv/cache</title>
+  <meta name="description" content="Score tokens individually, then keep or evict them in contiguous chunks instead of scattered picks, so local context stays intact: ChunkKV, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/chunkkv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/chunkkv.html" />
+  <meta property="og:title" content="ChunkKV — kv/cache" />
+  <meta property="og:description" content="Score tokens individually, then keep or evict them in contiguous chunks instead of scattered picks, so local context stays intact: ChunkKV, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="ChunkKV — kv/cache" />
+  <meta name="twitter:description" content="Score tokens individually, then keep or evict them in contiguous chunks instead of scattered picks, so local context stays intact: ChunkKV, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / partition-based</p>
+      <h1>ChunkKV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every scoring method in this catalogue ranks tokens one at a time and
+        keeps the top-scorers, wherever they happen to land in the sequence.
+        ChunkKV keeps that same per-token score but changes what gets evicted:
+        it groups tokens into fixed-length chunks first, then keeps or drops
+        a whole chunk at once, so survivors always show up in contiguous
+        runs instead of scattered singletons.
+      </p>
+
+      <h2>Scattered survivors can strand what they need</h2>
+      <p>
+        Liu et al. point out that most eviction methods score and rank
+        tokens in isolation, which can fragment a passage: if the two
+        tokens that make a fact legible are three words apart and only one
+        of them scores highly enough to survive, keeping just that one
+        token doesn't actually preserve the fact. The KV cache itself is a
+        real bottleneck: the paper cites it as consuming
+        up to 70% of total memory during long-context inference. Their fix
+        doesn't touch how importance gets measured; it changes the unit
+        that eviction operates on, from a single token to a short run of
+        neighboring ones.
+      </p>
+
+      <h2>Keep the score, change the unit</h2>
+      <p>
+        ChunkKV doesn't invent its own importance signal. In kvpress it
+        wraps any other <code>ScorerPress</code>, the same
+        <code>score()</code> logic that method would use on its own (SnapKV,
+        Knorm, whichever press you hand it), computed exactly as that press
+        would compute it. What ChunkKV changes is what happens after the
+        scores exist: instead of ranking individual tokens and keeping a
+        global top-k, it cuts the sequence into fixed-length chunks
+        (<code>chunk_length</code>, 20 tokens by default), averages each
+        chunk's token scores into a single chunk score, ranks the chunks,
+        and keeps the top-scoring ones whole. Every token in a kept chunk
+        survives; every token in a dropped chunk is evicted, regardless of
+        how that individual token happened to score. A leftover partial
+        chunk at the end, when the sequence length isn't a clean multiple
+        of <code>chunk_length</code>, gets scored and ranked the same way,
+        as one more chunk competing for a slot.
+      </p>
+      <p>
+        One real constraint: kvpress's implementation asserts
+        the underlying press wasn't handed raw attention weights, so
+        ChunkKV composes with scorers that compute importance from hidden
+        states and keys directly, not with a press that needs eager
+        attention output passed in.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Watch the <code>chunk length</code> slider: survivors always arrive
+        in contiguous blocks matching that width, never as isolated tokens
+        scattered across the sequence. kvpress's own default chunk length is
+        20, sized for much longer real sequences; this demo uses a smaller
+        one so the blocking is visible on a 29-token sample.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> The per-token score behind
+        this demo is a synthetic stand-in for whatever <code>ScorerPress</code>
+        ChunkKV would actually be wrapping (SnapKV, Knorm, or anything else
+        in this catalogue that produces one score per token). The
+        chunk-averaging and ranking on top of it match kvpress's real
+        <code>ChunkKVPress.compress()</code> logic exactly.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because ChunkKV only changes the unit of eviction, not the scoring
+        rule, it composes with anything else in this catalogue that
+        produces a per-token score, rather than competing with it: point it
+        at SnapKV and you get SnapKV's importance signal applied
+        chunk-wise. The paper reports this pays off in practice: up to 8.7%
+        better precision than comparable methods at the same compression
+        ratio, across LongBench, Needle-in-a-Haystack, GSM8K, and
+        JailbreakV. Its paper also describes a separate layer-wise
+        index-reuse technique, good for a further 26.5% throughput gain by
+        exploiting similarity across layers, worth flagging honestly:
+        kvpress's <code>ChunkKVPress</code> implements the chunk-wise
+        selection mechanism described above, not that throughput
+        optimization. The tradeoff on the selection side is granularity: a
+        single genuinely important token stranded inside an otherwise
+        unremarkable chunk has no way to survive alone, and the chunk
+        boundaries themselves are arbitrary fixed-length cuts, not real
+        sentence or paragraph breaks, so a coherent unit can still straddle
+        one. And because the importance signal itself comes entirely from
+        whatever press ChunkKV wraps, it also inherits that press's
+        weaknesses unchanged.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>ChunkKVPress</code>, a wrapper
+        around a <code>ScorerPress</code> whose <code>compress()</code>
+        reshapes that press's global scores into chunks of
+        <code>chunk_length</code>, averages within each chunk, and keeps
+        the top <code>max(1, int(n_chunks * (1 - compression_ratio)))</code>
+        chunks via <code>gather</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/chunkkv_press.py" target="_blank" rel="noopener">chunkkv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2502.00299" target="_blank" rel="noopener">Liu, Tang, Dong, Li, Liu, Li, Hu, Chu, "ChunkKV: Semantic-Preserving KV Cache Compression for Efficient Long-Context LLM Inference," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeChunkKV(tokens, params) {
+      const N = tokens.length;
+      const chunkLen = Math.max(1, Math.round(params.chunkLength));
+
+      // Synthetic per-token importance score, standing in for whatever
+      // ScorerPress ChunkKV wraps in the real implementation (SnapKV,
+      // Knorm, etc.) — ChunkKV never computes its own importance signal.
+      const tokenScore = tokens.map((tok, i) => seeded(tok + i + "chunkkv"));
+
+      const numCompleteChunks = Math.floor(N / chunkLen);
+      const remaining = N % chunkLen;
+
+      if (numCompleteChunks === 0) {
+        // Real ChunkKVPress delegates straight to the underlying press
+        // when the sequence doesn't fill even one chunk.
+        const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+        const ranked = tokenScore.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+        const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+        return { kept, scores: normalize(tokenScore) };
+      }
+
+      const totalChunks = numCompleteChunks + (remaining > 0 ? 1 : 0);
+      const chunkScores = [];
+      for (let c = 0; c < numCompleteChunks; c++) {
+        let sum = 0;
+        for (let i = c * chunkLen; i < (c + 1) * chunkLen; i++) sum += tokenScore[i];
+        chunkScores.push(sum / chunkLen);
+      }
+      if (remaining > 0) {
+        let sum = 0;
+        for (let i = N - remaining; i < N; i++) sum += tokenScore[i];
+        chunkScores.push(sum / remaining);
+      }
+
+      // Real kvpress computes n_chunks_kept via Python's int(), which
+      // truncates rather than rounds; Math.floor matches that.
+      const nChunksKept = Math.max(1, Math.floor(totalChunks * (1 - params.ratio)));
+      const rankedChunks = chunkScores.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const keptChunks = new Set(rankedChunks.slice(0, nChunksKept).map((p) => p[1]));
+
+      const kept = new Set();
+      const scores = new Array(N).fill(0);
+      for (let c = 0; c < totalChunks; c++) {
+        const isComplete = c < numCompleteChunks;
+        const start = isComplete ? c * chunkLen : N - remaining;
+        const end = isComplete ? start + chunkLen : N;
+        for (let i = start; i < end; i++) {
+          scores[i] = chunkScores[c];
+          if (keptChunks.has(c)) kept.add(i);
+        }
+      }
+      return { kept, scores: normalize(scores) };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "ChunkKV: whole-chunk keep/evict",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "chunkLength", label: "chunk length", min: 2, max: 10, step: 1, default: 4 },
+      ],
+      compute: computeChunkKV,
+    });
+  </script>
+</body>
+</html>

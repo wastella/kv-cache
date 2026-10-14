@@ -8,25 +8,37 @@ algorithms, built with plain HTML/CSS/JS — no build step, no server.
 ```
 index.html              home
 about.html
-contact.html            update the placeholder email/GitHub links before publishing
+contact.html
 basics.html             what a KV cache is, with a prefill/decode growth demo
 compression/
   index.html            method list, grouped into subsections:
-                         inference-time, architecture-level, systems, evaluation
-  streaming-llm.html    inference-time
-  h2o.html               inference-time
-  snapkv.html            inference-time
-  knorm.html             inference-time
-  pyramidkv.html         inference-time
-  tova.html              inference-time
-  think.html             inference-time
-  quantized-cache.html   inference-time
-  gqa-mqa.html           architecture-level
-  mla.html               architecture-level
+                         architecture, inference-time, combinators & wrappers,
+                         systems, evaluation
+
+  # architecture (decided at training time, not applied to an existing model)
+  gqa-mqa.html
+  mla.html
+
+  # inference-time (28 kvpress methods, applied to an already-trained model)
+  streaming-llm.html     h2o.html               tova.html
+  expected-attention.html critical-kv.html      capkv.html
+  duo-attention.html     snapkv.html            finch.html
+  chunkkv.html           lagkv.html             keydiff.html
+  knorm.html             cur.html               kvzip.html
+  restorekv.html         fast-kvzip.html        qfilter.html
+  pyramidkv.html         simlayerkv.html        lukv.html
+  dms.html               think.html             quantized-cache.html
+  compactor.html         cam.html               merging.html
+  kvcompose.html
+
+  # combinators & wrappers: one grouped note on index.html, no dedicated
+  # pages (AdaKV, ComposedPress, ChunkPress/BlockPress, KeyRerotationPress,
+  # PerLayerCompressionPress, the DecodingPress family, RandomPress)
+
   paged-attention.html   systems
   evaluation.html        evaluation
-css/style.css           shared design system
-js/sandbox.js           shared interactive demo component + scoring logic
+css/style.css            shared design system
+js/sandbox.js            shared interactive demo component + scoring logic
 ```
 
 ## Run locally
@@ -51,12 +63,22 @@ with an underscore).
 
 ## Adding a new inference-time method
 
-Copy `compression/streaming-llm.html` as a starting point. Each page:
+Copy `compression/knorm.html` (a plain slider-grid demo) or a bespoke page
+like `compression/tova.html` as a starting point, depending on whether the
+method fits the generic scoring-and-eviction pattern. Each page:
 
-1. Explains the method's intuition in prose.
-2. Defines a `compute(tokens, params)` function returning `{ kept, scores, tags }`.
-3. Calls `createCompressionDemo({...})` from `js/sandbox.js`.
-4. Links to the real source file in NVIDIA/kvpress and the original paper.
+1. Explains the method's intuition in prose, citing the real paper (arXiv ID)
+   and, where relevant, the real kvpress source file it's based on.
+2. Defines a `compute(tokens, params)` function returning `{ kept, scores, tags }`,
+   written to mirror kvpress's real scoring logic (verify against the actual
+   `.py` source, don't trust a docstring or summary).
+3. Calls `createCompressionDemo({...})` from `js/sandbox.js`, or a bespoke
+   demo builder if the method doesn't fit that generic shape.
+4. Flags any simulated/illustrative value with an explicit `.note` callout
+   (see `compression/knorm.html` for the canonical phrasing).
 
-Then add a row for it under the "Inference-time methods" subsection on
-`compression/index.html` and on `index.html`.
+Then add a row for it under the appropriate subsection on
+`compression/index.html`. If it's one of kvpress's pure wrapper/infrastructure
+classes (takes a `press:`/`base_press:` param rather than scoring anything
+itself), it belongs in the "Combinators & wrappers" grouped note instead of
+getting its own page — see `HANDOFF.md` for how that split was decided.

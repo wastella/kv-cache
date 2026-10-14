@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KVzip — kv/cache</title>
+  <meta name="description" content="Instead of watching attention, ask the model to repeat the context back and see which cached KV pairs it actually needed: KVzip, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/kvzip.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/kvzip.html" />
+  <meta property="og:title" content="KVzip — kv/cache" />
+  <meta property="og:description" content="Instead of watching attention, ask the model to repeat the context back and see which cached KV pairs it actually needed: KVzip, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="KVzip — kv/cache" />
+  <meta name="twitter:description" content="Instead of watching attention, ask the model to repeat the context back and see which cached KV pairs it actually needed: KVzip, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / reconstruction-based</p>
+      <h1>KVzip</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every other method in this catalogue scores a cached KV pair by
+        watching attention happen, either live during decoding or in a
+        prompt-reading pass beforehand. KVzip does something stranger: it
+        hands the model back its own context and asks it to repeat it,
+        then measures which cached KV pairs that reconstruction actually
+        leaned on. What survives is whatever turned out to be necessary to
+        rebuild the context, not whatever a query happened to attend to.
+      </p>
+
+      <h2>Scoring by asking the model to prove it needed something</h2>
+      <p>
+        KVzip's importance signal has nothing to do with any real user
+        query. After the prompt is prefilled once, KVzip re-feeds chunks of
+        that same context back into the model as a repeat-the-context
+        instruction, reusing the KV cache that's already sitting there. As
+        the model generates the repeated text, its queries attend back over
+        the original cached keys, and KVzip records, for every cached
+        position, the maximum cross-attention weight it ever received
+        during that reconstruction across the chunks it appears in. A KV
+        pair that reconstruction never needed to lean on gets evicted; one
+        it repeatedly attended to survives. It's an importance measurement
+        derived entirely from whether the context is <em>reconstructible</em>
+        without a given entry, not from any downstream task at all, which
+        is what makes it query-agnostic: the same compressed cache can
+        serve any question about the context, because nothing about the
+        scoring depended on what the question was going to be.
+      </p>
+      <p>
+        The first <code>n_sink</code> positions (4 by default) are exempted
+        from this and simply forced to the maximum score, the same
+        attention-sink logic <a href="streaming-llm.html">StreamingLLM</a>
+        uses, on top of the reconstruction signal everywhere else.
+      </p>
+
+      <h2>The cost, and where the granularity actually lives</h2>
+      <p>
+        This isn't free. kvpress's own implementation logs a warning that
+        the chunked reconstruction pass adds "a computational overhead of
+        2–3 times the initial prefilling cost," on top of the prefill that
+        already happened, because the model effectively has to read most of
+        its own context a second time before any tokens can be evicted.
+      </p>
+      <p>
+        The eviction decision itself is also finer-grained than a single
+        kept/evicted call per token. Scores are tracked per layer <em>and
+        per KV head</em>, and by default kvpress lets the pruning budget
+        float freely across layers rather than forcing a uniform ratio
+        everywhere (a <code>layerwise=True</code> flag switches to a fixed
+        per-layer ratio instead). That means two attention heads in the
+        same layer can end up keeping different token positions, something
+        the simple keep/evict grid below can't show directly, it's drawn
+        for one representative layer and head, the same simplification
+        <a href="think.html">ThinK</a>'s per-channel grid makes elsewhere in
+        this catalogue.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Double-bordered tokens are the forced attention sinks. Shade on
+        everything else tracks the simulated reconstruction score: how much
+        attention a "repeat this context" pass would have paid back to that
+        position.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no model here
+        actually reconstructing anything. Each non-sink token gets a
+        synthetic reconstruction score seeded from its text, standing in
+        for the real cross-attention measurement KVzip's chunked repeat
+        pass would produce. The eviction math applied to those scores,
+        including the exact budget formula, is the real one from
+        <code>compress_post</code>.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because the score comes from reconstruction rather than any live
+        query, the same compressed cache is meant to generalize across
+        whatever gets asked about the context afterward, instead of being
+        tuned to one observation window the way <a href="snapkv.html">SnapKV</a>
+        is. The paper reports 3-4x cache size reduction with roughly 2x
+        faster decoding, evaluated on LLaMA3.1, Qwen2.5, and Gemma3 with
+        contexts up to 170K tokens, and claims to outperform other
+        query-agnostic eviction methods it was compared against. The
+        tradeoff is the reconstruction pass itself: 2-3x prefill overhead
+        is a real cost paid up front for every request, before any memory
+        is actually saved, which makes KVzip a worse fit for latency-
+        sensitive short contexts than for long documents amortizing that
+        cost over a much bigger cache. kvpress's own docstring also flags
+        that this implementation prioritizes fidelity to the algorithm over
+        runtime efficiency, and points to the original repository for a
+        version without that overhead (at a stated cost to compression
+        quality). It's also explicitly unsupported for Gemma3 models in
+        kvpress specifically, despite Gemma3 being one of the architectures
+        the original paper evaluates.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>KVzipPress</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/kvzip_press.py" target="_blank" rel="noopener">kvzip_press.py</a>.
+        The docstring is explicit that this is a minimal-changes port, not
+        the fully optimized version: for that, including a variant without
+        runtime compression overhead, see the original repository,
+        <a href="https://github.com/snu-mllab/KVzip" target="_blank" rel="noopener">snu-mllab/KVzip</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2505.23416" target="_blank" rel="noopener">Kim, Kim, Kwon, Lee, Yun, Song, "KVzip: Query-Agnostic KV Cache Compression with Context Reconstruction," NeurIPS 2025 (oral)</a>.
+      </p>
+      <p>
+        See also <a href="restorekv.html">RestoreKV</a>, which builds a
+        learned restoration mechanism on top of this exact scoring
+        pipeline.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const KVZIP_N_SINK = 4;
+
+    function computeKVzip(tokens, params) {
+      const N = tokens.length;
+      const nSink = Math.min(KVZIP_N_SINK, N);
+
+      // Real KVzip scores every non-sink position by the max cross-attention
+      // a "repeat this context" reconstruction pass paid back to it. There's
+      // no model here, so each token gets a synthetic score instead; sink
+      // positions are forced to the max score exactly as compress_post does.
+      const score = tokens.map((tok, i) => (i < nSink ? 1.0 : seeded(tok + i + "kvzip")));
+
+      // Real compress_post: n_pruned = int(score_val.numel() * ratio),
+      // kept = numel - n_pruned. That's N - floor(N*ratio), which is not
+      // the same as floor(N*(1-ratio)) once N*ratio isn't a whole number.
+      const pruned = Math.floor(N * params.ratio);
+      const budget = Math.max(0, N - pruned);
+
+      const ranked = score.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+
+      const tags = new Map();
+      for (let i = 0; i < nSink; i++) tags.set(i, ["sink"]);
+
+      return { kept, scores: normalize(score), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "KVzip: simulated context-reconstruction score",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeKVzip,
+    });
+  </script>
+</body>
+</html>

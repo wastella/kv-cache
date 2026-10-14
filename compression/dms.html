@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DMS: Dynamic Memory Sparsification — kv/cache</title>
+  <meta name="description" content="Pick a score threshold, not a compression ratio, and let however many tokens clear the bar be however many survive: DMS, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/dms.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/dms.html" />
+  <meta property="og:title" content="DMS: Dynamic Memory Sparsification — kv/cache" />
+  <meta property="og:description" content="Pick a score threshold, not a compression ratio, and let however many tokens clear the bar be however many survive: DMS, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="DMS: Dynamic Memory Sparsification — kv/cache" />
+  <meta name="twitter:description" content="Pick a score threshold, not a compression ratio, and let however many tokens clear the bar be however many survive: DMS, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / threshold-based</p>
+      <h1>DMS: Dynamic Memory Sparsification</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every other method in this catalogue picks a compression ratio up
+        front and works out which tokens meet it. DMS flips that around: you pick a score
+        threshold, and however many tokens clear it is however many survive. The actual
+        compression ratio is a result, not an input, and it changes with the content.
+      </p>
+
+      <h2>A threshold, not a target</h2>
+      <p>
+        kvpress's <code>DMSPress</code> wraps any other scorer press in this catalogue, SnapKV,
+        Knorm, TOVA, whatever you'd otherwise use, and changes how its scores get turned into an
+        eviction decision. Instead of ranking every token and keeping the top
+        <code>N × (1 − ratio)</code> of them, it evicts anything scoring below a
+        <code>threshold</code> and keeps everything else, no matter how many tokens that turns out
+        to be. A <code>sliding_window_size</code> (128 by default) always protects the most recent
+        tokens: scores accumulate in a buffer as tokens arrive, and only once the buffer grows past
+        that window does the oldest overflow actually get compared against the threshold and
+        possibly evicted.
+      </p>
+      <p>
+        Because the amount of compression depends on how many scores clear the bar, and that
+        depends on the content, <code>compression_ratio</code> isn't something you set on this
+        press. It's a read-only property, computed from how much actually got evicted after a
+        forward pass; the source raises an <code>AttributeError</code> if you try to assign it
+        directly. That's a deliberate design choice, not an oversight: a fixed ratio and a fixed
+        threshold are two different contracts, and DMSPress only offers the second one.
+      </p>
+      <p>
+        DMSPress can also run during decoding, not just prefill, if <code>decoding=True</code>: the
+        score buffer keeps accumulating and evicting as generation continues, which most
+        fixed-ratio presses in this catalogue simply can't do, their budget is locked in once at
+        prefill.
+      </p>
+
+      <h2>What the real DMS paper does that this press doesn't</h2>
+      <p>
+        The name comes from Łańcucki, Staniszewski, Nawrot, and Ponti's "Inference-Time
+        Hyper-Scaling with KV Cache Compression" (arXiv 2506.05345). Their DMS trains a dedicated
+        eviction mechanism, in as little as 1,000 training steps, that <em>postpones</em>
+        eviction to merge token representations rather than discarding them outright, reaching up
+        to 8x compression while preserving or improving accuracy. The freed-up budget is then
+        spent generating more tokens within the same compute envelope, which is where
+        "hyper-scaling" comes from.
+      </p>
+      <p>
+        kvpress is direct about the gap here: its own docstring states that <code>DMSPress</code>
+        implements a dense-prefill version of the idea, not the sparse-prefill version, and does
+        not include the trained evictor modules from the paper. What you get in kvpress is the
+        threshold-instead-of-ratio interface applied generically to any existing scorer, not a
+        reproduction of the paper's trained merging pipeline. For something closer to the actual
+        paper, the docstring points to
+        <a href="https://huggingface.co/nvidia/Qwen3-8B-DMS-8x" target="_blank" rel="noopener">nvidia/Qwen3-8B-DMS-8x</a>
+        on Hugging Face and
+        <a href="https://github.com/NVIDIA/Model-Optimizer/tree/main/experimental/dms" target="_blank" rel="noopener">NVIDIA/Model-Optimizer's experimental/dms</a>
+        on GitHub.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        This isn't a compression-ratio slider like the other pages: DMS's whole point is that the
+        ratio isn't chosen, it falls out of the threshold and the content. Move the threshold and
+        watch the kept count shift; then switch the sample variant at the same threshold and watch
+        the kept count shift again, purely because the (simulated) underlying scores are different,
+        not because any setting changed.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Tokens with a colored border are inside the sliding window and are always kept, they're
+        never even compared against the threshold. Everything else survives only if its score
+        clears the bar.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> The per-token scores driving this demo are a
+        deterministic stand-in for whatever underlying scorer press you'd actually wrap DMSPress
+        around; there's no real forward pass or trained evictor behind them. The "sample variant"
+        control exists only to show that a fixed threshold produces a different kept count on
+        different content, which is the mechanism's entire point.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        A threshold adapts to content automatically: a context that's mostly redundant compresses
+        hard at a fixed decision rule, one that's mostly novel information barely compresses at
+        all, without anyone having to guess the right ratio ahead of time. It can also keep
+        sparsifying through decoding, not just once at prefill, and it composes with whichever
+        scorer press you'd otherwise reach for in this catalogue, DMSPress is a wrapper, not a
+        scoring method of its own.
+      </p>
+      <p>
+        The costs are the mirror image of that flexibility. A threshold has no universal meaning
+        by itself, it's calibrated to whatever the wrapped scorer's <code>score()</code> actually
+        outputs, a raw dot product, a z-score, a negated L2 norm, and a value tuned for one scorer
+        or model is meaningless for another; it has to be re-tuned. The total memory footprint also
+        stops being predictable ahead of time the way a ratio-based cache's is, which matters if
+        you need a hard memory ceiling rather than a best-effort one. And as covered above, kvpress's
+        own docstring is explicit that this implementation approximates DMS's threshold-based
+        interface far more than it reproduces the paper's actual sparse-prefill, trained-evictor
+        mechanism.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>DMSPress</code>, which wraps a <code>press: ScorerPress</code>
+        and evicts scores below <code>threshold</code>, subject to <code>sliding_window_size</code>.
+        See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/dms_press.py" target="_blank" rel="noopener">dms_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2506.05345" target="_blank" rel="noopener">Łańcucki, Staniszewski, Nawrot, Ponti, "Inference-Time Hyper-Scaling with KV Cache Compression," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeDMS(tokens, params) {
+      const N = tokens.length;
+      const windowSize = Math.min(Math.round(params.windowSize), N);
+      const variant = Math.round(params.variant);
+
+      // Synthetic per-token score standing in for whatever underlying
+      // scorer press DMSPress would be wrapping. Real DMSPress evicts
+      // anything scoring below `threshold`; there is no fixed budget.
+      const raw = tokens.map((tok, i) => seeded(tok + i + "dms-v" + variant));
+
+      const kept = new Set();
+      const tags = new Map();
+      const windowStart = Math.max(0, N - windowSize);
+      for (let i = windowStart; i < N; i++) {
+        kept.add(i);
+        tags.set(i, ["window"]);
+      }
+      for (let i = 0; i < windowStart; i++) {
+        if (raw[i] >= params.threshold) kept.add(i);
+      }
+
+      return { kept, scores: raw, tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "DMS: score threshold, not a fixed ratio",
+      controls: [
+        { key: "threshold", label: "score threshold", min: 0, max: 1, step: 0.05, default: 0.5, format: (v) => v.toFixed(2) },
+        { key: "windowSize", label: "sliding window size", min: 0, max: 15, step: 1, default: 6 },
+        { key: "variant", label: "sample variant", min: 1, max: 3, step: 1, default: 1 },
+      ],
+      compute: computeDMS,
+    });
+  </script>
+</body>
+</html>

@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="kv/cache — understanding KV cache compression" />
   <meta name="twitter:description" content="A small, free reference for how LLMs cache attention keys and values, and the techniques used to compress that cache." />
@@ -40,15 +40,12 @@
     </header>
 
     <main>
-      <p class="kicker">an interactive field guide</p>
-      <h1>Understanding the KV cache, and how to shrink it.</h1>
+      <h1>An interactive guide to KV-cache compression</h1>
       <p class="lede">
-        Every transformer that generates text one token at a time keeps a growing
+        A transformer model keeps a growing
         cache of key and value vectors so it never has to recompute attention over
-        the whole prompt again. That cache is simple in concept and expensive in
-        practice — long contexts can push it past the size of the model itself.
-        This site walks through what it is and how researchers compress it,
-        with small interactive demos instead of just equations.
+        the whole prompt again. Over time that cache can become costly. This guide walks through what it is and various methods to compress it,
+        with small interactive demos.
       </p>
 
       <h2>Start here</h2>
@@ -57,7 +54,6 @@
           <a class="row-link" href="basics.html">
             <div class="row-top">
               <span class="row-title">What is a KV cache?</span>
-              <span class="row-index">01</span>
             </div>
             <div class="row-desc">Prefill vs. decode, why the cache grows linearly, and why that becomes a memory problem at long context lengths.</div>
           </a>
@@ -65,98 +61,44 @@
       </ul>
 
       <h2>Compression</h2>
-      <p class="muted" style="font-size:13.5px;max-width:56ch;">
-        Eight compression methods, ported from
-        <a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA's kvpress</a>,
-        spanning position, attention, prediction, norm, layer-wise, channel,
-        and quantization-based approaches. Every demo lets you adjust the
-        compression ratio and watch which tokens (or channels, or bits)
-        survive.
-      </p>
       <ul class="rows">
         <li>
-          <a class="row-link" href="compression/streaming-llm.html">
+          <a class="row-link" href="compression/index.html#architecture">
             <div class="row-top">
-              <span class="row-title">StreamingLLM</span>
-              <span class="row-tag">position-based</span>
+              <span class="row-title">Architecture</span>
             </div>
-            <div class="row-desc">Keep a handful of "sink" tokens plus a sliding recent window. No scoring required.</div>
+            <div class="row-desc">Decisions made when the model is trained, so the cache is smaller from the very first token, before any eviction logic runs.</div>
           </a>
         </li>
         <li>
-          <a class="row-link" href="compression/h2o.html">
+          <a class="row-link" href="compression/index.html#inference-time">
             <div class="row-top">
-              <span class="row-title">H2O — Heavy-Hitter Oracle</span>
-              <span class="row-tag">attention-based</span>
+              <span class="row-title">Inference-time</span>
             </div>
-            <div class="row-desc">Track cumulative attention per token; a small set of "heavy hitters" earns most of it.</div>
+            <div class="row-desc">Applied to a model you didn't train yourself, no fine-tuning needed. Each method picks what to keep from whatever cache the architecture hands it.</div>
           </a>
         </li>
         <li>
-          <a class="row-link" href="compression/snapkv.html">
+          <a class="row-link" href="compression/index.html#systems">
             <div class="row-top">
-              <span class="row-title">SnapKV</span>
-              <span class="row-tag">prediction-based</span>
+              <span class="row-title">Systems</span>
             </div>
-            <div class="row-desc">Use attention from the end of the prompt to predict which earlier tokens will matter, before generation even starts.</div>
+            <div class="row-desc">Not about deciding what to keep, but where it lives once kept: this is what turns a smaller logical cache into more sequences actually served.</div>
           </a>
         </li>
         <li>
-          <a class="row-link" href="compression/knorm.html">
+          <a class="row-link" href="compression/index.html#evaluation">
             <div class="row-top">
-              <span class="row-title">Knorm</span>
-              <span class="row-tag">norm-based</span>
+              <span class="row-title">Evaluation</span>
             </div>
-            <div class="row-desc">Score cached keys by nothing but their own L2 norm — no attention weights needed, the cheapest method here.</div>
-          </a>
-        </li>
-        <li>
-          <a class="row-link" href="compression/pyramidkv.html">
-            <div class="row-top">
-              <span class="row-title">PyramidKV</span>
-              <span class="row-tag">layer-wise</span>
-            </div>
-            <div class="row-desc">Give early layers a bigger cache budget than late ones, instead of one flat ratio for every layer.</div>
-          </a>
-        </li>
-        <li>
-          <a class="row-link" href="compression/tova.html">
-            <div class="row-top">
-              <span class="row-title">TOVA — Token Omission Via Attention</span>
-              <span class="row-tag">attention-based</span>
-            </div>
-            <div class="row-desc">Score tokens from only the current decoding step's attention, recomputed fresh every step.</div>
-          </a>
-        </li>
-        <li>
-          <a class="row-link" href="compression/think.html">
-            <div class="row-top">
-              <span class="row-title">ThinK</span>
-              <span class="row-tag">dimension-pruning</span>
-            </div>
-            <div class="row-desc">Prune the least useful channels inside each kept key vector, instead of dropping whole tokens.</div>
-          </a>
-        </li>
-        <li>
-          <a class="row-link" href="compression/quantized-cache.html">
-            <div class="row-top">
-              <span class="row-title">Quantized KV cache</span>
-              <span class="row-tag">quantization</span>
-            </div>
-            <div class="row-desc">Keep every token, but store each one in fewer bits. Stacks with any eviction method above.</div>
+            <div class="row-desc">Every method here saves memory. Whether that's a good trade depends on how you check the damage afterward.</div>
           </a>
         </li>
       </ul>
-
-      <div class="note">
-        <strong>More methods are coming.</strong> kvpress implements 40+ presses;
-        this catalogue currently covers 8 of them, spanning most major families.
-        See <a href="about.html">about</a> for how these were chosen.
-      </div>
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>

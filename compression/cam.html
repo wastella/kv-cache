@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CaM — kv/cache</title>
+  <meta name="description" content="Instead of dropping evicted tokens, fold their value vectors into the kept neighbors right after them: CaM (Cache Merging), interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/cam.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/cam.html" />
+  <meta property="og:title" content="CaM — kv/cache" />
+  <meta property="og:description" content="Instead of dropping evicted tokens, fold their value vectors into the kept neighbors right after them: CaM (Cache Merging), interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="CaM — kv/cache" />
+  <meta name="twitter:description" content="Instead of dropping evicted tokens, fold their value vectors into the kept neighbors right after them: CaM (Cache Merging), interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / merging</p>
+      <h1>CaM: Cache Merging</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every eviction-based method in this catalogue makes the same
+        choice for a low-scoring token: drop it, its key and value are gone.
+        CaM makes a different choice for some of them. Before a token is
+        pruned, it's given a chance to fold its value vector into the kept
+        tokens right after it, so some of what it knew survives even though
+        its own slot in the cache doesn't.
+      </p>
+
+      <h2>A coin flip for every evicted token</h2>
+      <p>
+        CaM sits on top of an ordinary scorer, kvpress calls it the
+        <code>base_press</code>, which ranks cached tokens exactly the way
+        a method like <a href="h2o.html">H2O</a> or
+        <a href="tova.html">TOVA</a> would. The lowest-scoring tokens are
+        still marked for eviction. What changes is what happens to them
+        next, for each evicted token, a target window of the next several
+        <em>kept</em> tokens immediately following it, in sequence order,
+        is identified (<code>merge_budget</code> tokens, 32 by default).
+      </p>
+      <p>
+        Whether that evicted token actually merges into its window is
+        decided by a Bernoulli coin flip, weighted by how much cumulative
+        attention the evicted token earned relative to the average
+        cumulative attention of the tokens in its window:
+        <code>clamp(A_evicted / mean(A_window), 0, 1)</code>. A token that
+        was pulling noticeably more attention than its neighbors has a
+        good chance of merging in; a token that was already close to
+        irrelevant mostly doesn't. When the coin comes up in favor of
+        merging, the evicted token's <strong>value</strong> vector, not its
+        key, is divided by the window size and added into every kept
+        token's value in that window. When it doesn't, the token is simply
+        evicted, no different from any other method in this catalogue.
+      </p>
+      <p>
+        Only values get merged; an evicted token's key is discarded either
+        way. That's a real asymmetry in the algorithm: what survives a
+        merge is a smoothed trace of the evicted token's contribution
+        blended into its neighbors' outputs, not anything a future query
+        could specifically attend back to.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Solid tokens are kept outright. Dashed, struck-through tokens with
+        an arrow merged their value into up to 3 kept tokens just after
+        them (illustrative, real kvpress defaults to 32). Plain
+        struck-through tokens lost their merge coin flip and were evicted
+        with nothing carried forward. Tokens outlined in the accent color
+        received at least one merge contribution.
+      </p>
+      <p id="cam-merge-caption" class="muted" style="font-size:12.5px;"></p>
+      <div class="note">
+        <strong>Simulated, not measured, and simplified.</strong> The
+        importance scores, cumulative-attention values, and Bernoulli draws
+        here are all synthetic, seeded from each token's text rather than
+        measured from a real base press and real attention accumulation.
+        This demo also simplifies which evicted tokens are even eligible to
+        merge: kvpress's real batched implementation only considers the
+        tokens added since the last compression pass as merge candidates
+        (governed by internal step-counting bookkeeping this demo doesn't
+        model); here, every evicted token gets a shot at merging, so the
+        mechanism stays visible. The merge-or-not rule itself, the
+        probability formula and the value-averaging into the window, is
+        the real one from <code>CAMPress.compress</code>.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        The point of merging instead of dropping is to reduce the output
+        perturbation eviction causes: a token that was contributing a
+        little to a lot of future outputs doesn't just vanish, some
+        residue of it keeps propagating through the tokens it merged into.
+        The paper's own experiments, run across LLaMA, OPT, and GPT-NeoX,
+        report this improves memory-efficient LLM inference relative to
+        eviction alone, though the abstract itself doesn't commit to a
+        specific headline number, so treat "how much better" as
+        benchmark-dependent rather than a single figure. The cost is
+        complexity on every axis: a Bernoulli draw and a value-averaging
+        step for every evicted token instead of a single sort, a
+        <code>merge_budget</code> window size to tune, and, notably, this
+        kvpress implementation doesn't use a single global compression
+        ratio the way most of this catalogue does. It targets an absolute
+        <code>target_size</code> (2048 tokens by default) and only
+        triggers a compression pass every <code>compression_interval</code>
+        decode steps (512 by default), batching many steps' worth of
+        eviction into occasional bulk passes rather than compressing
+        continuously. That's a real difference in how you'd configure it,
+        not just an implementation detail.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>CAMPress</code>, which wraps a
+        configurable <code>base_press</code> scorer and overrides
+        <code>compress()</code> to merge before pruning. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/cam_press.py" target="_blank" rel="noopener">cam_press.py</a>.
+        Original paper:
+        <a href="https://openreview.net/forum?id=LCTmppB165" target="_blank" rel="noopener">Zhang, Du, Luo, Zhong, Zhang, Liu, Ji, "CaM: Cache Merging for Memory-efficient LLMs Inference," ICML 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const CAM_MERGE_BUDGET = 3; // illustrative; kvpress's real default is 32
+
+    const mergeCaptionEl = document.getElementById("cam-merge-caption");
+
+    function computeCaM(tokens, params) {
+      const N = tokens.length;
+
+      // Two separate synthetic signals, standing in for base_press.score()
+      // (importance, used to rank who gets evicted) and the running
+      // cumulative-attention buffer CAMPress accumulates across decode
+      // steps (used only for the merge-probability formula).
+      const importance = tokens.map((tok, i) => seeded(tok + i + "cam-imp"));
+      const attn = tokens.map((tok, i) => 0.05 + seeded(tok + i + "cam-attn") * 0.95);
+
+      // CAMPress doesn't take a compression ratio at all; it targets an
+      // absolute target_size and evicts cache_len - target_size tokens.
+      // This demo derives an illustrative target_size from the ratio
+      // slider purely so the interaction matches the rest of the
+      // catalogue; the real class takes target_size directly.
+      const targetSize = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const nToEvict = N - targetSize;
+
+      const rankedAsc = importance.map((s, i) => [s, i]).sort((a, b) => a[0] - b[0]);
+      const evictedIdx = rankedAsc.slice(0, nToEvict).map((p) => p[1]).sort((a, b) => a - b);
+      const keptIdx = rankedAsc.slice(nToEvict).map((p) => p[1]).sort((a, b) => a - b);
+
+      const kept = new Set(keptIdx);
+      const tags = new Map();
+      let mergedCount = 0;
+
+      evictedIdx.forEach((e) => {
+        // Real CAMPress: target window is the merge_budget kept tokens
+        // immediately after e in sequence order (searchsorted + offsets).
+        const window = keptIdx.filter((k) => k > e).slice(0, CAM_MERGE_BUDGET);
+        if (window.length === 0) return; // nothing after it: plain evict
+
+        const meanAttn = window.reduce((s, k) => s + attn[k], 0) / window.length;
+        const prob = meanAttn > 0 ? Math.min(1, attn[e] / meanAttn) : 0;
+
+        // Deterministic stand-in for torch.bernoulli(merge_prob), fixed per
+        // token rather than re-sampled on every ratio change; in the real
+        // model a fresh draw happens every compression pass regardless.
+        const coin = seeded(tokens[e] + e + "cam-coin");
+        if (coin < prob) {
+          mergedCount++;
+          tags.set(e, ["cam-merged"]);
+          window.forEach((k) => {
+            const existing = tags.get(k) || [];
+            if (!existing.includes("cam-merge-target")) tags.set(k, [...existing, "cam-merge-target"]);
+          });
+        }
+      });
+
+      if (mergeCaptionEl) {
+        mergeCaptionEl.textContent =
+          evictedIdx.length === 0
+            ? "Nothing evicted at this ratio."
+            : mergedCount > 0
+            ? `${mergedCount} of ${evictedIdx.length} evicted tokens folded their value into up to ${CAM_MERGE_BUDGET} kept neighbors just after them. The remaining ${evictedIdx.length - mergedCount} lost their merge coin flip and were evicted with nothing carried forward.`
+            : `0 of ${evictedIdx.length} evicted tokens passed this pass's merge coin flip, every one was evicted outright this time.`;
+      }
+
+      return { kept, scores: normalize(importance), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "CaM: merge-or-evict, illustrative target_size from the ratio slider",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeCaM,
+    });
+  </script>
+</body>
+</html>

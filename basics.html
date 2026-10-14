@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="What is a KV cache? — kv/cache" />
   <meta name="twitter:description" content="Prefill vs decode, why the KV cache grows linearly, and why that's a memory problem at long context." />
@@ -43,9 +43,9 @@
       <h1>What is a KV cache?</h1>
 
       <p class="lede">
-        In short: it's memoization for attention. Without it, generating
+        <strong>TL;DR:</strong> it's memoization for attention. Without it, generating
         the Nth token would mean recomputing attention over all N-1 previous
-        tokens from scratch, every single step. The KV cache stores the result
+        tokens from scratch every single step. The KV cache stores the result
         of that work so it only has to happen once per token.
       </p>
 
@@ -58,7 +58,7 @@
         uses those weights to blend the values.
       </p>
       <p>
-        The key insight for generation: once a token has been processed, its
+        The key insight is that once a token has been processed, its
         key and value vectors never change again. Its query vector was only
         ever needed to figure out <em>its own</em> output, but its key and
         value stick around as something every future token will need to
@@ -67,25 +67,24 @@
 
       <h2>Two phases</h2>
       <p>
-        <strong>Prefill:</strong> The entire prompt is processed at once, in
+        <strong>Prefill:</strong> The entire prompt gets processed at once, in
         parallel, and a key/value pair is computed and cached for every token
         in it.
       </p>
       <p>
         <strong>Decode:</strong> The model generates one new token at a time.
-        Each step only computes a query, key, and value for the single new
+        Each step computes a query, key, and value for new
         token, appends the new key/value to the cache, and attends over
         everything cached so far.
       </p>
 
       <div id="growth-demo"></div>
       <p class="muted" style="font-size:12.5px;">
-        The Q/K/V numbers here are real: pulled from an actual GPT-2 (124M)
-        forward pass over this sentence, not simulated. The first few steps
-        are prefill (the whole prompt lands in the cache at once), the rest
-        is decode (one token appended per step); click any cached token to
-        see its vectors, and switch layer/head to see they're genuinely
-        different at each one.
+        The Q/K/V numbers here are pulled from an actual GPT-2 (124M)
+        forward pass over this sentence. The first few steps
+        are prefill, the rest
+        is decode. You can click any cached token to
+        see its vectors, and switch layer/head to see how they're different at each one.
       </p>
 
       <h2>Why the cache becomes a problem</h2>
@@ -94,26 +93,25 @@
         (the 2 is for storing both keys and values), multiplied again by batch
         size. Every one of those factors is fixed by the model and your
         workload except sequence length, which keeps growing for as long as
-        you keep generating or feeding in context.
+        you keep generating or feeding in context. That becomes very costly very fast.
       </p>
       <p>
-        Concretely: serving Llama&nbsp;3.1-70B at a 1M-token context in fp16 can
+        Concretely, serving Llama&nbsp;3.1-70B at a 1M-token context in fp16 can
         require on the order of 330GB just for the KV cache, which is more than the
         model's own weights. That has to sit in GPU memory for the
-        entire lifetime of the request, and it's <em>per request</em>, so it
+        entire lifetime of the request, and it's <strong>per request</strong>, so it
         also caps how many requests you can serve at once.
       </p>
 
-      <div class="note">
-        <strong>This is the problem KV cache compression solves.</strong>
+    <p><strong>This is what KV cache compression solves.</strong>
         Instead of keeping every token's key and value forever, compression
         methods decide which ones can be dropped, merged, or stored more
         cheaply with as little damage to output quality as possible.
-      </div>
+    </p>
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>

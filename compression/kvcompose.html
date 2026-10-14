@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KVCompose — kv/cache</title>
+  <meta name="description" content="Let every attention head disagree about which tokens matter, then reconcile that disagreement two different ways, one that fits a normal cache and one that doesn't: KVCompose, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/kvcompose.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/kvcompose.html" />
+  <meta property="og:title" content="KVCompose — kv/cache" />
+  <meta property="og:description" content="Let every attention head disagree about which tokens matter, then reconcile that disagreement two different ways, one that fits a normal cache and one that doesn't: KVCompose, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="KVCompose — kv/cache" />
+  <meta name="twitter:description" content="Let every attention head disagree about which tokens matter, then reconcile that disagreement two different ways, one that fits a normal cache and one that doesn't: KVCompose, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / structured</p>
+      <h1>KVCompose</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Most attention-based methods on this site compute one importance score
+        per token and apply it everywhere. KVCompose lets every attention
+        head score tokens on its own, then reconciles the disagreement
+        between heads two different ways: one that keeps the compressed
+        cache a normal rectangular tensor, and one that doesn't.
+      </p>
+
+      <h2>Every head gets its own opinion</h2>
+      <p>
+        KVCompose scores tokens from real attention, the same raw material
+        SnapKV and H2O use, but it doesn't collapse that attention down to
+        one number per token right away. During prefill, it re-runs the
+        prompt through the model a second time with the cache already
+        primed, purely to record how much attention each context token
+        receives, per layer and <em>per individual attention head</em>
+        (aggregated across the decoding steps that follow with a
+        configurable <code>mean</code> or <code>max</code> rule). Query
+        heads that share a KV head under grouped-query attention are then
+        pooled back down to that KV head's own score. The result is a
+        tensor of shape <code>(layers, kv_heads, context_len)</code>: a
+        genuinely separate ranking of the same tokens for every head,
+        instead of one ranking shared by all of them.
+      </p>
+      <p>
+        Two more adjustments happen before any eviction decision gets
+        made: optionally weighting each token's score by the norm of its
+        own value vector (<code>add_v_norm</code>, off by default), and
+        adding the mean score across all heads back into every head's own
+        score (<code>add_mean_across_heads</code>, on by default) so one
+        noisy head can't swing a token's fate entirely on its own.
+      </p>
+
+      <h2>Structured vs. unstructured: what actually differs</h2>
+      <p>
+        Here's the part that's easy to get wrong from the name alone:
+        <strong>structured</strong> mode does not force every head to keep
+        the identical set of tokens. Each head still ranks tokens by its
+        own score and picks its own top tokens. What structured mode forces
+        is that every head in a layer keeps the same <em>number</em> of
+        tokens, that count decided globally per layer from a composite
+        score (each head's own score curve sorted independently, then
+        averaged across heads rank-by-rank, so the composite reflects how
+        much a given rank position tends to matter across heads rather than
+        raw score levels). A shared count per head is exactly what lets the
+        compressed keys and values for a layer be <code>torch.stack</code>'d
+        back into one ordinary <code>(kv_heads, count, head_dim)</code>
+        tensor afterward, even though which original sequence position
+        landed in slot <em>j</em> can differ from head to head: that's the
+        "composite token" in the name, one cache slot, several heads'
+        worth of independently-chosen content.
+      </p>
+      <p>
+        <strong>Unstructured</strong> mode drops that shared-count
+        constraint too: each head gets its own token budget from a genuine
+        global top-k over every (layer, head, token) score at once, so
+        different heads in the same layer can end up keeping different
+        <em>numbers</em> of tokens, not just different tokens. It's the more
+        theoretically faithful version of "let every head decide for
+        itself," but a cache where each head has a different sequence
+        length no longer fits kvpress's normal dense tensor layout, so
+        kvpress implements it by masking out evicted positions in the
+        attention computation itself (<code>masked_key_indices</code>)
+        rather than physically shrinking any tensor.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Two synthetic KV heads score the same 29 tokens independently.
+        Toggle structured/unstructured and watch what changes: in
+        structured mode both rows always keep the same <em>count</em>, but
+        the actual tokens kept can still differ between rows, since each
+        head still ranks by its own score. In unstructured mode the counts
+        themselves can diverge too.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real attention
+        or value vectors behind these two rows. Each token's per-head
+        "importance" is assigned deterministically from its text, and
+        unstructured mode's budget divergence is an illustrative jitter,
+        not a real global top-k. The point being demonstrated, structured
+        alignment is about a shared token <em>count</em>, not a shared
+        token <em>identity</em>, is real, and comes directly from reading
+        kvpress's <code>compress_structured()</code>.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        KVCompose gives you both worlds behind one interface. Structured
+        mode's shared per-head count keeps the compressed cache a plain
+        dense tensor, so nothing downstream (the attention kernel, the
+        serving stack) needs to know compression happened at all, while
+        still letting each head pick tokens by its own attention pattern
+        rather than being forced through one shared SnapKV-style score the
+        way most of this catalogue works. Layer budgets themselves come
+        from the data (the rank-averaged composite curve) rather than a
+        hand-picked shape the way PyramidKV's pyramid is. The costs are
+        real: running the prompt through the model twice during prefill,
+        once normally and once more purely to harvest per-head attention
+        statistics, roughly doubles prefill compute and briefly needs about
+        2x the KV cache memory, which kvpress's own implementation warns
+        about directly in its logs. Scoring also requires eager attention,
+        so it can't run the scoring pass through a fused or flash-attention
+        kernel. And unstructured mode's better theoretical fit comes at the
+        cost of needing a modified attention path rather than a literal
+        smaller tensor, extra plumbing an ordinary top-k eviction doesn't
+        need. As of this writing kvpress has only tested it against Llama,
+        Qwen2, and Qwen3 architectures.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>KVComposePress</code>. See the
+        source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/kvcompose_press.py" target="_blank" rel="noopener">kvcompose_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2509.05165" target="_blank" rel="noopener">Akulov, Sana, De Domenico, Si Salem, Piovesan, Ayed, "KVCompose: Efficient Structured KV Cache Compression with Composite Tokens," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function createKVComposeDemo({ root, tokens }) {
+      const N = tokens.length;
+      const params = { ratio: 0.5, structured: true };
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("KVCompose: two KV heads, scored independently")]));
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("kept by this head")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted" }), document.createTextNode("evicted by this head")]));
+      root.appendChild(legend);
+
+      function headScore(head) {
+        return tokens.map((tok, i) => seeded(tok + i + "kvcompose-" + head));
+      }
+      const scores = [headScore(0), headScore(1)];
+
+      const headRows = [0, 1].map((h) => {
+        root.appendChild(el("div", { class: "token-group-label" }, [document.createTextNode("kv head " + h)]));
+        const grid = el("div", { class: "token-grid" });
+        root.appendChild(grid);
+        const cells = tokens.map((tok) => {
+          const t = el("span", { class: "token" }, [document.createTextNode(tok)]);
+          grid.appendChild(t);
+          return t;
+        });
+        return cells;
+      });
+
+      const toggleWrap = el("div", { class: "demo-buttons" });
+      const structuredBtn = el("button", { class: "btn" }, [document.createTextNode("structured")]);
+      const unstructuredBtn = el("button", { class: "btn ghost" }, [document.createTextNode("unstructured")]);
+      structuredBtn.addEventListener("click", () => {
+        params.structured = true;
+        structuredBtn.className = "btn";
+        unstructuredBtn.className = "btn ghost";
+        render();
+      });
+      unstructuredBtn.addEventListener("click", () => {
+        params.structured = false;
+        structuredBtn.className = "btn ghost";
+        unstructuredBtn.className = "btn";
+        render();
+      });
+      toggleWrap.appendChild(structuredBtn);
+      toggleWrap.appendChild(unstructuredBtn);
+      root.appendChild(toggleWrap);
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const inputId = "kvcompose-ratio";
+      const valSpan = el("span", { class: "val" }, [document.createTextNode(Math.round(params.ratio * 100) + "%")]);
+      const labelRow = el("label", { for: inputId }, [document.createTextNode("compression ratio "), valSpan]);
+      const input = el("input", { type: "range", id: inputId, min: 0, max: 0.85, step: 0.05, value: params.ratio });
+      input.addEventListener("input", () => {
+        params.ratio = parseFloat(input.value);
+        valSpan.textContent = Math.round(params.ratio * 100) + "%";
+        render();
+      });
+      controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statHead0 = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("head 0 kept")]),
+      ]);
+      const statHead1 = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("head 1 kept")]),
+      ]);
+      const statOverlap = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("same tokens, both heads")]),
+      ]);
+      statsWrap.appendChild(statHead0);
+      statsWrap.appendChild(statHead1);
+      statsWrap.appendChild(statOverlap);
+      root.appendChild(statsWrap);
+
+      function topK(scoreArr, k) {
+        const ranked = scoreArr.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+        return new Set(ranked.slice(0, k).map((p) => p[1]));
+      }
+
+      function render() {
+        // Real kvpress computes n_kept via Python's int(), which truncates
+        // rather than rounds; Math.floor matches that for non-negative values.
+        const baseBudget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+        let budgets;
+        if (params.structured) {
+          budgets = [baseBudget, baseBudget];
+        } else {
+          // Illustrative only: the real unstructured budget per head comes
+          // from a genuine global top-k over every (layer, head, token)
+          // score at once, not a formula. This jitter just demonstrates
+          // that heads CAN end up with different counts.
+          const jitter = Math.round((seeded("kvcompose-jitter-" + params.ratio) - 0.5) * 6);
+          budgets = [baseBudget, Math.min(N, Math.max(1, baseBudget + jitter))];
+        }
+
+        const kept = [topK(scores[0], budgets[0]), topK(scores[1], budgets[1])];
+
+        [0, 1].forEach((h) => {
+          headRows[h].forEach((cellEl, i) => {
+            cellEl.classList.toggle("evicted", !kept[h].has(i));
+          });
+        });
+
+        statHead0.firstChild.textContent = `${kept[0].size} / ${N}`;
+        statHead1.firstChild.textContent = `${kept[1].size} / ${N}`;
+        let common = 0;
+        kept[0].forEach((i) => { if (kept[1].has(i)) common++; });
+        statOverlap.firstChild.textContent = common + " tokens";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createKVComposeDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

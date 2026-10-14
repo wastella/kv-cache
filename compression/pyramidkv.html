@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="PyramidKV — kv/cache" />
   <meta name="twitter:description" content="Give early transformer layers a bigger cache budget than late ones, instead of one flat ratio for every layer: PyramidKV, interactively explained." />
@@ -43,38 +43,41 @@
       <p class="kicker"><a href="index.html" class="quiet">compression</a> / layer-wise</p>
       <h1>PyramidKV</h1>
       <p class="lede">
-        Every method so far answers "which tokens matter?" and applies that
+        <strong>TL;DR:</strong> Every method so far answers "which tokens matter?" and applies that
         same answer to every layer of the model. PyramidKV asks a different
-        question: how much cache budget does each layer even need? — and
-        gives early layers more room than late ones.
+        question: how much cache budget does each layer even need? It gives
+        early layers more room than late ones.
       </p>
 
       <h2>Information funnels as it goes up</h2>
       <p>
         Cai et al. traced how attention actually spreads across layers in a
         decoder-only transformer and found a consistent shape to it: in
-        early layers, attention is broad — a token ends up attending fairly
+        early layers, attention is broad: a token ends up attending fairly
         evenly across much of the context. By the later layers, attention
         narrows sharply, concentrating on a small set of tokens the model
         has already decided matter (often the same handful across many
         later layers). They call this <strong>pyramidal information
-        funneling</strong> — wide at the base, narrow at the top.
+        funneling</strong>: wide at the base, narrow at the top.
       </p>
       <p>
         If later layers only meaningfully attend to a handful of tokens
         anyway, giving them the same cache budget as early layers is wasted
-        space. PyramidKV allocates a shrinking budget per layer — derived
+        space. PyramidKV allocates a shrinking budget per layer (derived
         from a target compression ratio, a small fixed window for the most
         recent tokens, and a <code>beta</code> parameter controlling how
-        steep the pyramid is — instead of one flat ratio everywhere. It
-        reuses SnapKV's observation-window scoring to decide
-        <em>which</em> tokens fill each layer's budget; what it changes is
+        steep the pyramid is) instead of one flat ratio everywhere. To
+        decide <em>which</em> tokens fill each layer's budget, it scores
+        every earlier token by how much attention the prompt's last few
+        tokens (the "observation window") pay to it, and keeps the
+        top-scoring ones: the same scoring rule SnapKV uses on its own.
+        What PyramidKV changes on top of that scoring is
         <em>how many</em> slots each layer gets, based purely on depth.
       </p>
 
       <h2>Try it</h2>
       <p class="muted" style="font-size:13.5px;">
-        This isn't a token grid like the other pages — PyramidKV doesn't
+        This isn't a token grid like the other pages: PyramidKV doesn't
         change which tokens are picked, it changes how large each layer's
         budget is. The chart below reproduces kvpress's actual
         <code>get_layer_budget()</code> formula against our 29-token sample
@@ -83,7 +86,7 @@
       <div id="demo"></div>
       <p class="muted" style="font-size:12.5px;">
         Each bar is one layer's kept-token budget out of 29. Push
-        <code>beta</code> toward 1 and the pyramid flattens out — every
+        <code>beta</code> toward 1 and the pyramid flattens out: every
         layer gets the same budget, the gentlest possible shape. Raise it
         and the gap between the earliest and latest layer widens.
       </p>
@@ -93,19 +96,19 @@
         Because the axis being compressed here (how much budget each layer
         gets) is orthogonal to the axis every other method in this catalogue
         compresses (which tokens survive), PyramidKV composes naturally with
-        per-token scoring — which is exactly how kvpress implements it, as a
+        per-token scoring, which is exactly how kvpress implements it, as a
         subclass of <code>SnapKVPress</code> that overrides only the budget
         calculation. The gain is real: by construction, the total budget
         summed across every layer works out to roughly what flat SnapKV
-        would use at the same compression ratio — PyramidKV isn't shrinking
+        would use at the same compression ratio. PyramidKV isn't shrinking
         the cache any further, it's redistributing that same total so
         layers that don't need the room lose it and layers that do keep it,
         buying back accuracy a flat split leaves on the table. The
         tradeoff is that the pyramid shape is a global hyperparameter tuned
         somewhat empirically rather than derived per-model, so a poor
         <code>beta</code> or window size for a given architecture can
-        under- or over-allocate layers relative to what they actually need
-        — and near the extremes of the compression-ratio range (very light
+        under- or over-allocate layers relative to what they actually need,
+        and near the extremes of the compression-ratio range (very light
         compression or very aggressive) the shape constraints can't be
         satisfied at all, in which case it silently falls back to a flat,
         SnapKV-style budget. PyramidKV also still inherits whatever
@@ -127,7 +130,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -139,7 +142,7 @@
     // Python's round() is round-half-to-even, not round-half-up like
     // JS's Math.round(). get_layer_budget() calls Python's round() on
     // every layer, so matching it exactly (not just "close enough")
-    // requires the same tie-breaking rule — otherwise budgets can be off
+    // requires the same tie-breaking rule: otherwise budgets can be off
     // by one right at the boundary cases where the formula lands on a
     // clean .5.
     function pyRound(x) {
@@ -183,13 +186,13 @@
 
       root.innerHTML = "";
       root.className = "demo";
-      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("PyramidKV — per-layer cache budget out of " + qLen)]));
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("PyramidKV: per-layer cache budget out of " + qLen)]));
 
       const fallbackNote = el("p", {
         class: "muted",
         style: "font-size:12.5px;margin:-6px 0 14px;display:none;",
       }, [document.createTextNode(
-        "These settings can't satisfy the pyramid shape (window_size ≤ min ≤ max ≤ q_len), so it falls back to a flat per-layer budget — the same thing the real press does."
+        "These settings can't satisfy the pyramid shape (window_size ≤ min ≤ max ≤ q_len), so it falls back to a flat per-layer budget: the same thing the real press does."
       )]);
       root.appendChild(fallbackNote);
 
@@ -216,10 +219,11 @@
         { key: "windowSize", label: "window size", min: 1, max: 10, step: 1, default: 4 },
         { key: "beta", label: "beta (pyramid steepness)", min: 1, max: 40, step: 1, default: 20 },
       ];
-      controls.forEach((c) => {
+      controls.forEach((c, idx) => {
+        const inputId = `pyramid-${c.key}-${idx}`;
         const valSpan = el("span", { class: "val" }, [document.createTextNode(String(c.default))]);
-        const labelRow = el("label", {}, [document.createTextNode(c.label + " "), valSpan]);
-        const input = el("input", { type: "range", min: c.min, max: c.max, step: c.step, value: c.default });
+        const labelRow = el("label", { for: inputId }, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", id: inputId, min: c.min, max: c.max, step: c.step, value: c.default });
         input.addEventListener("input", () => {
           const v = parseFloat(input.value);
           params[c.key] = v;

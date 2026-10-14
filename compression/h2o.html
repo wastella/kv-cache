@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>H2O — Heavy-Hitter Oracle — kv/cache</title>
+  <title>H2O: Heavy-Hitter Oracle — kv/cache</title>
   <meta name="description" content="Keep the tokens that consistently earn the most cumulative attention: H2O, interactively explained." />
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
@@ -12,14 +12,14 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="kv/cache" />
   <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/h2o.html" />
-  <meta property="og:title" content="H2O — Heavy-Hitter Oracle — kv/cache" />
+  <meta property="og:title" content="H2O: Heavy-Hitter Oracle — kv/cache" />
   <meta property="og:description" content="Keep the tokens that consistently earn the most cumulative attention: H2O, interactively explained." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="H2O — Heavy-Hitter Oracle — kv/cache" />
+  <meta name="twitter:title" content="H2O: Heavy-Hitter Oracle — kv/cache" />
   <meta name="twitter:description" content="Keep the tokens that consistently earn the most cumulative attention: H2O, interactively explained." />
   <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <link rel="stylesheet" href="../css/style.css" />
@@ -41,12 +41,12 @@
 
     <main>
       <p class="kicker"><a href="index.html" class="quiet">compression</a> / attention-based</p>
-      <h1>H2O — Heavy-Hitter Oracle</h1>
+      <h1>H2O: Heavy-Hitter Oracle</h1>
       <p class="lede">
-        Instead of guessing from position alone, watch which tokens actually
+        <strong>TL;DR:</strong> Instead of guessing from position alone, watch which tokens actually
         earn attention as generation proceeds, and keep the ones that keep
         earning it. A small number of "heavy hitters" tend to account for
-        most of the attention mass — everyone else is a safer bet to evict.
+        most of the attention mass; everyone else is a safer bet to evict.
       </p>
 
       <h2>The heavy-tailed observation</h2>
@@ -54,8 +54,8 @@
         Zhang et al. measured attention scores accumulated across generation
         steps and found the distribution is highly skewed: a small subset of
         tokens consistently receive a large share of total attention,
-        regardless of their position in the sequence. Those tokens —
-        <strong>heavy hitters</strong> — tend to matter for the rest of
+        regardless of their position in the sequence. Those tokens,
+        <strong>heavy hitters</strong>, tend to matter for the rest of
         generation too, because removing them measurably hurts output
         quality, while removing low-scoring tokens barely registers.
       </p>
@@ -63,32 +63,33 @@
         H2O turns that observation into an eviction policy: maintain a
         running score per cached token (its accumulated attention so far),
         and whenever the cache needs to shrink, drop the lowest-scoring
-        tokens outside a small recent window. It's a greedy, content-aware
-        alternative to StreamingLLM's fixed rule.
+        tokens outside a small recent window. That's a greedy,
+        content-aware rule: what gets evicted depends on what the model
+        actually attended to, not on a token's position alone.
       </p>
 
       <h2>Try it</h2>
       <div id="demo"></div>
       <p class="muted" style="font-size:12.5px;">
         Darker tokens have higher simulated cumulative attention. Raise the
-        compression ratio and watch the lowest scorers — not the oldest
-        tokens — go first.
+        compression ratio and watch the lowest scorers, not the oldest
+        tokens, go first.
       </p>
       <div class="note">
         <strong>Simulated, not measured.</strong> A real H2O implementation
         accumulates these scores from actual attention weights during a model's
         forward pass. This demo generates plausible-looking scores locally in
         the browser (a recency term plus a few random "heavy hitter" spikes)
-        so you can see the eviction logic clearly — the numbers themselves
+        so you can see the eviction logic clearly. The numbers themselves
         aren't from a real model.
       </div>
 
       <h2>Where this shines, and where it doesn't</h2>
       <p>
         H2O adapts to content: a token that turns out to matter gets to stay,
-        wherever it sits in the sequence, which fixes StreamingLLM's blind
-        spot for important mid-context information. The cost is that scoring
-        isn't free — you need to track and update attention statistics for
+        wherever it sits in the sequence, which is exactly what a purely
+        positional rule would miss. The cost is that scoring
+        isn't free: you need to track and update attention statistics for
         every cached token, which adds memory and compute overhead of its
         own. And those statistics only reflect what's happened so far: an
         early attention score can be a noisy predictor of long-run
@@ -108,7 +109,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -127,7 +128,9 @@
         const spike = isHeavyHitter ? 0.7 + seeded(tok + i + "mag") * 0.9 : 0;
         return recency * 0.35 + spike;
       });
-      const budget = Math.max(1, Math.round(N * (1 - params.ratio)));
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
       const ranked = raw.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
       const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
       return { kept, scores: normalize(raw) };
@@ -136,7 +139,7 @@
     createCompressionDemo({
       root: document.getElementById("demo"),
       tokens: SAMPLE_TOKENS,
-      label: "H2O — cumulative attention score",
+      label: "H2O: cumulative attention score",
       controls: [
         { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
         { key: "tau", label: "recency weighting", min: 2, max: 30, step: 1, default: 10 },

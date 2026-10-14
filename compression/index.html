@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Compression — kv/cache</title>
-  <meta name="description" content="How the KV cache gets smaller — at training time, at inference time, and in how it's served — plus how to tell if it worked." />
+  <meta name="description" content="How the KV cache gets smaller (at training time, at inference time, and in how it's served) plus how to tell if it worked." />
   <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="../favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
@@ -13,14 +13,14 @@
   <meta property="og:site_name" content="kv/cache" />
   <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/index.html" />
   <meta property="og:title" content="Compression — kv/cache" />
-  <meta property="og:description" content="How the KV cache gets smaller — at training time, at inference time, and in how it's served — plus how to tell if it worked." />
+  <meta property="og:description" content="How the KV cache gets smaller (at training time, at inference time, and in how it's served) plus how to tell if it worked." />
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Compression — kv/cache" />
-  <meta name="twitter:description" content="How the KV cache gets smaller — at training time, at inference time, and in how it's served — plus how to tell if it worked." />
+  <meta name="twitter:description" content="How the KV cache gets smaller (at training time, at inference time, and in how it's served) plus how to tell if it worked." />
   <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <link rel="stylesheet" href="../css/style.css" />
 </head>
@@ -41,175 +41,332 @@
 
     <main>
       <h1>Compression methods</h1>
-      <p class="lede">
-        The KV cache gets smaller at a few different points in a model's
-        life: some choices are baked in when it's <em>trained</em>, some are
-        bolted on at <em>inference</em> time, and some come from how a
-        serving system manages memory. Different stage, same goal — this
-        page groups all of it together, plus how you'd know any of it
-        actually worked.
-      </p>
 
-      <h2>Inference-time methods</h2>
-      <p class="muted" style="font-size:13.5px;max-width:56ch;">
-        Ported from <a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA's kvpress</a>,
-        which implements 40+ of these behind a single API. Each page here
-        explains one method's intuition, shows the real scoring logic it's
-        built on, and lets you run it against the same sample sentence so you
-        can compare methods directly. These are all "presses" — bolted onto
-        an already-trained model, not adjustable at any other stage.
-      </p>
+      <h2 id="architecture">Architecture</h2>
+
+      <ul class="rows">
+        <li>
+          <a class="row-link" href="gqa-mqa.html">
+            <div class="row-top">
+              <span class="row-title">GQA / MQA</span>
+            </div>
+            <div class="row-desc">Share key/value heads across query heads and the cache shrinks before a single token is ever evicted.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="mla.html">
+            <div class="row-top">
+              <span class="row-title">MLA: Multi-Head Latent Attention</span>
+            </div>
+            <div class="row-desc">Compress every token's keys and values into one small latent vector, and reconstruct the full per-head versions on the fly.</div>
+          </a>
+        </li>
+      </ul>
+
+      <h2 id="inference-time">Inference-time</h2>
 
       <ul class="rows">
         <li>
           <a class="row-link" href="streaming-llm.html">
             <div class="row-top">
               <span class="row-title">StreamingLLM</span>
-              <span class="row-tag">position-based</span>
             </div>
-            <div class="row-desc">Keep a handful of "sink" tokens plus a sliding recent window. No content scoring — pure position rule.</div>
+            <div class="row-desc">A fixed-size cache for infinitely long streams: an early attention sink stays forever, a trailing window stays current, and nothing in between survives. No attention scores involved anywhere in the rule.</div>
           </a>
         </li>
         <li>
           <a class="row-link" href="h2o.html">
             <div class="row-top">
-              <span class="row-title">H2O — Heavy-Hitter Oracle</span>
-              <span class="row-tag">attention-based</span>
+              <span class="row-title">H2O: Heavy-Hitter Oracle</span>
             </div>
-            <div class="row-desc">Track cumulative attention per token during generation; a small set of "heavy hitters" earns most of it — keep those.</div>
+            <div class="row-desc">Tracks how much cumulative attention each cached token has actually earned since it entered the cache, rather than trusting its position. A handful of "heavy hitters" end up accounting for most of the mass.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="tova.html">
+            <div class="row-top">
+              <span class="row-title">TOVA: Token Omission Via Attention</span>
+            </div>
+            <div class="row-desc">No running total, no memory of earlier steps: eviction is decided fresh every decode step, purely from which cached token the current query attended to least right now.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="expected-attention.html">
+            <div class="row-top">
+              <span class="row-title">Expected Attention</span>
+            </div>
+            <div class="row-desc">Forecast how much future queries will attend to each cached key from the statistics of queries the model has already issued, before those future queries ever arrive.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="critical-kv.html">
+            <div class="row-top">
+              <span class="row-title">CriticalKV</span>
+            </div>
+            <div class="row-desc">Take an existing score and rescale it by how much a token's value actually moves the model's output, not just how much attention it received.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="capkv.html">
+            <div class="row-top">
+              <span class="row-title">CapKV</span>
+            </div>
+            <div class="row-desc">Score each cached token by how much unique, query-relevant information its value vector would leave behind if evicted.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="duo-attention.html">
+            <div class="row-top">
+              <span class="row-title">DuoAttention</span>
+            </div>
+            <div class="row-desc">Classify each attention head as retrieval or streaming once, then give retrieval heads the full cache and streaming heads only a sink and a recent window.</div>
           </a>
         </li>
         <li>
           <a class="row-link" href="snapkv.html">
             <div class="row-top">
               <span class="row-title">SnapKV</span>
-              <span class="row-tag">prediction-based</span>
             </div>
-            <div class="row-desc">Use attention from the last few prompt tokens to predict which earlier tokens will matter, and compress before generation even starts.</div>
+            <div class="row-desc">Score how much attention the end of the prompt pays to everything before it. Do it once, right after the prompt is read, before a single token is generated.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="finch.html">
+            <div class="row-top">
+              <span class="row-title">FINCH</span>
+            </div>
+            <div class="row-desc">SnapKV-style prediction, but the observation window auto-sizes to match the question instead of using a fixed hyperparameter.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="chunkkv.html">
+            <div class="row-top">
+              <span class="row-title">ChunkKV</span>
+            </div>
+            <div class="row-desc">Score tokens individually, then evict in contiguous chunks instead of scattered picks, so surviving context stays intact rather than fragmented.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="lagkv.html">
+            <div class="row-top">
+              <span class="row-title">LagKV</span>
+            </div>
+            <div class="row-desc">No attention weights at all: score each partition of the cache by how it compares statistically to the partition that comes right after it.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="keydiff.html">
+            <div class="row-top">
+              <span class="row-title">KeyDiff</span>
+            </div>
+            <div class="row-desc">Score each key by how closely it points toward the average key direction, and evict the ones that look the most typical, no attention weights involved.</div>
           </a>
         </li>
         <li>
           <a class="row-link" href="knorm.html">
             <div class="row-top">
               <span class="row-title">Knorm</span>
-              <span class="row-tag">norm-based</span>
             </div>
-            <div class="row-desc">Score cached keys by nothing but their own L2 norm — no attention weights needed at all, the cheapest content-aware method here.</div>
+            <div class="row-desc">The cheapest scoring rule in the catalogue: a key vector's own length turns out to predict how much attention it'll get later, so length alone decides who gets evicted.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="cur.html">
+            <div class="row-top">
+              <span class="row-title">CUR</span>
+            </div>
+            <div class="row-desc">Score cached tokens by both key and value magnitude, judged against nearby tokens rather than against the whole sequence at once.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="kvzip.html">
+            <div class="row-top">
+              <span class="row-title">KVzip</span>
+            </div>
+            <div class="row-desc">Ask the model to repeat the context back to itself, then measure which cached KV pairs it actually needed to do that.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="restorekv.html">
+            <div class="row-top">
+              <span class="row-title">RestoreKV</span>
+            </div>
+            <div class="row-desc">Spend part of the compression budget on a handful of learned tokens trained to restore what a full cache would have known.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="fast-kvzip.html">
+            <div class="row-top">
+              <span class="row-title">KVzap &amp; Fast KVzip</span>
+            </div>
+            <div class="row-desc">Two small trained models, one from NVIDIA and one from NAVER, that approximate KVzip's expensive reconstruction signal cheaply enough to run every step.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="qfilter.html">
+            <div class="row-top">
+              <span class="row-title">Q-Filter</span>
+            </div>
+            <div class="row-desc">Score cached keys against a filter vector learned offline for the exact model being served, instead of a heuristic formula computed at request time.</div>
           </a>
         </li>
         <li>
           <a class="row-link" href="pyramidkv.html">
             <div class="row-top">
               <span class="row-title">PyramidKV</span>
-              <span class="row-tag">layer-wise</span>
             </div>
-            <div class="row-desc">Give early layers a bigger cache budget than late ones instead of one flat ratio everywhere — a different axis of compression entirely.</div>
+            <div class="row-desc">How much cache budget does each layer even need? Give early layers more room than late ones, instead of one flat ratio everywhere.</div>
           </a>
         </li>
         <li>
-          <a class="row-link" href="tova.html">
+          <a class="row-link" href="simlayerkv.html">
             <div class="row-top">
-              <span class="row-title">TOVA — Token Omission Via Attention</span>
-              <span class="row-tag">attention-based</span>
+              <span class="row-title">SimLayerKV</span>
             </div>
-            <div class="row-desc">Score tokens from only the current decoding step's attention, recomputed fresh every step — simpler state than H2O, more volatile.</div>
+            <div class="row-desc">Some layers already behave like StreamingLLM on their own. Detect those "lazy" layers per input and only compress those.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="lukv.html">
+            <div class="row-top">
+              <span class="row-title">LU-KV</span>
+            </div>
+            <div class="row-desc">Give every layer and every attention head its own cache budget, pulled from a curve fit offline instead of one hand-picked shape.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="dms.html">
+            <div class="row-top">
+              <span class="row-title">DMS</span>
+            </div>
+            <div class="row-desc">Pick a score threshold instead of a compression ratio, and let however many tokens clear the bar be however many survive.</div>
           </a>
         </li>
         <li>
           <a class="row-link" href="think.html">
             <div class="row-top">
               <span class="row-title">ThinK</span>
-              <span class="row-tag">dimension-pruning</span>
             </div>
-            <div class="row-desc">Prune the least useful channels inside each kept key vector instead of dropping whole tokens — shrinks vectors, not the sequence.</div>
+            <div class="row-desc">Prunes an entirely different axis: every token stays, but the least useful dimensions get stripped out of each vector, the same channels dropped for every token in a head.</div>
           </a>
         </li>
         <li>
           <a class="row-link" href="quantized-cache.html">
             <div class="row-top">
               <span class="row-title">Quantized KV cache</span>
-              <span class="row-tag">quantization</span>
             </div>
-            <div class="row-desc">Keep every token, but store each one in fewer bits. Stacks with any eviction method above rather than competing with it.</div>
+            <div class="row-desc">Keep every token, but store each surviving number in fewer bits, instead of throwing anything away.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="compactor.html">
+            <div class="row-top">
+              <span class="row-title">Compactor</span>
+            </div>
+            <div class="row-desc">Blend a geometry-only leverage score with a non-causal chunked-attention score to decide what survives.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="cam.html">
+            <div class="row-top">
+              <span class="row-title">CaM</span>
+            </div>
+            <div class="row-desc">Instead of dropping an evicted token outright, fold its value vector into the kept neighbor right after it.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="merging.html">
+            <div class="row-top">
+              <span class="row-title">MergingPress</span>
+            </div>
+            <div class="row-desc">Instead of just deleting an evicted token, fold its value into whichever surviving token looks most similar to it.</div>
+          </a>
+        </li>
+        <li>
+          <a class="row-link" href="kvcompose.html">
+            <div class="row-top">
+              <span class="row-title">KVCompose</span>
+            </div>
+            <div class="row-desc">Let every attention head disagree about which tokens matter, then reconcile that disagreement in a way that still fits a standard cache layout.</div>
           </a>
         </li>
       </ul>
 
-      <h2>Architecture-level</h2>
-      <p class="muted" style="font-size:13.5px;max-width:56ch;">
-        Decided when the model is trained, not adjustable afterward — the
-        cache is smaller by construction rather than by a scoring rule
-        applied later.
-      </p>
-
+      <h2 id="combinators">Combinators &amp; wrappers</h2>
       <ul class="rows">
         <li>
-          <a class="row-link" href="gqa-mqa.html">
-            <div class="row-top">
-              <span class="row-title">GQA / MQA — Grouped/Multi-Query Attention</span>
-              <span class="row-tag">architecture-level</span>
-            </div>
-            <div class="row-desc">Share key/value heads across multiple query heads so the cache is smaller by construction — baked in at training time, not adjustable afterward.</div>
-          </a>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">AdaKV</span>
+          </div>
+          <div class="row-desc">Instead of one global top-k across the whole cache, lets each attention head keep its own top-scoring tokens, with a safeguard so no head gets compressed to nothing. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/adakv_press.py" target="_blank" rel="noopener">adakv_press.py</a>.</div></div>
         </li>
         <li>
-          <a class="row-link" href="mla.html">
-            <div class="row-top">
-              <span class="row-title">MLA — Multi-Head Latent Attention</span>
-              <span class="row-tag">architecture-level</span>
-            </div>
-            <div class="row-desc">Compress each token's keys and values into one small shared latent vector, reconstructed on the fly — DeepSeek's approach to a smaller cache without dropping heads.</div>
-          </a>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">ComposedPress</span>
+          </div>
+          <div class="row-desc">Runs several presses in sequence, each operating on what the previous one left behind, e.g. evict tokens with SnapKV, then prune dimensions with ThinK. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/composed_press.py" target="_blank" rel="noopener">composed_press.py</a>.</div></div>
+        </li>
+        <li>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">ChunkPress &amp; BlockPress</span>
+          </div>
+          <div class="row-desc">Apply any scoring method independently within fixed-size chunks (ChunkPress) or iteratively block by block (BlockPress), instead of scoring the whole sequence at once. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/chunk_press.py" target="_blank" rel="noopener">chunk_press.py</a>, <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/block_press.py" target="_blank" rel="noopener">block_press.py</a>.</div></div>
+        </li>
+        <li>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">KeyRerotationPress</span>
+          </div>
+          <div class="row-desc">After any press evicts tokens, re-applies rotary position embeddings so the survivors' positions are contiguous again instead of leaving gaps in the rotation. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/key_rerotation_press.py" target="_blank" rel="noopener">key_rerotation_press.py</a>.</div></div>
+        </li>
+        <li>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">PerLayerCompressionPress</span>
+          </div>
+          <div class="row-desc">Applies a manually specified list of per-layer compression ratios to any underlying method, the general case PyramidKV's fixed pyramid shape is one specific instance of. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/per_layer_compression_press.py" target="_blank" rel="noopener">per_layer_compression_press.py</a>.</div></div>
+        </li>
+        <li>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">DecodingPress family</span>
+          </div>
+          <div class="row-desc">Runs compression only during decoding (not the initial prompt read), on a rolling buffer, every few steps. PrefillDecodingPress pairs a separate prefill-time and decode-time press; CompressionRatioDecodingPress derives the decode-time budget from a ratio instead of a fixed size. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/decoding_press.py" target="_blank" rel="noopener">decoding_press.py</a>.</div></div>
+        </li>
+        <li>
+          <div class="row-link"><div class="row-top">
+            <span class="row-title">RandomPress</span>
+          </div>
+          <div class="row-desc">Evicts tokens uniformly at random. Not a real strategy, a null hypothesis: any method worth using should beat this at the same compression ratio. Source: <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/random_press.py" target="_blank" rel="noopener">random_press.py</a>.</div></div>
         </li>
       </ul>
 
-      <h2>Systems</h2>
-      <p class="muted" style="font-size:13.5px;max-width:56ch;">
-        How a serving system allocates and manages cache memory — orthogonal
-        to which tokens or bits get kept.
-      </p>
+      <h2 id="systems">Systems</h2>
 
       <ul class="rows">
         <li>
           <a class="row-link" href="paged-attention.html">
             <div class="row-top">
               <span class="row-title">PagedAttention</span>
-              <span class="row-tag">systems</span>
             </div>
-            <div class="row-desc">Stop pre-allocating one giant contiguous buffer per sequence — allocate the cache in fixed-size pages instead, like an OS's virtual memory.</div>
+            <div class="row-desc">Stop pre-allocating one giant contiguous buffer per sequence. Allocate fixed-size pages on demand instead, the way an OS pages virtual memory.</div>
           </a>
         </li>
       </ul>
 
-      <h2>Evaluation</h2>
-      <p class="muted" style="font-size:13.5px;max-width:56ch;">
-        Removing part of the cache always saves memory. Whether it's safe
-        depends entirely on how you measure quality afterward.
-      </p>
+      <h2 id="evaluation">Evaluation</h2>
 
       <ul class="rows">
         <li>
           <a class="row-link" href="evaluation.html">
             <div class="row-top">
               <span class="row-title">Evaluating compression</span>
-              <span class="row-tag">methodology</span>
             </div>
-            <div class="row-desc">Removing half the cache always saves memory. Whether it's safe depends entirely on how you measure quality afterward.</div>
+            <div class="row-desc">Perplexity, needle-in-a-haystack, and full benchmark suites each catch a different kind of damage, and none of them alone tells the whole story.</div>
           </a>
         </li>
       </ul>
-
-      <div class="note">
-        <strong>More methods are coming.</strong> The inference-time section
-        covers 8 of kvpress's 40+ presses. Still missing: merging/low-rank
-        methods (e.g. CaM, KVzip), composed eviction+quantization presets,
-        and a few other scoring families —
-        <a href="../contact.html">let me know</a> which you'd want to see next.
-      </div>
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>

@@ -199,13 +199,20 @@ function createGrowthDemo({
   let currentHead = heads[0];
 
   const tokenEls = tokens.map((tok, idx) => {
-    const t = el("span", { class: "token pending" }, [document.createTextNode(tok.trim())]);
-    t.addEventListener("click", () => {
+    const t = el("span", { class: "token pending", tabindex: "0", role: "button" }, [document.createTextNode(tok.trim())]);
+    const pick = () => {
       if (t.classList.contains("pending")) return;
       selected = idx;
       userPicked = true;
       drawPanel();
       tokenEls.forEach((e, i) => e.classList.toggle("selected", i === selected));
+    };
+    t.addEventListener("click", pick);
+    t.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        pick();
+      }
     });
     (idx < prefillCount ? prefillGrid : decodeGrid).appendChild(t);
     return t;
@@ -345,7 +352,7 @@ function createGrowthDemo({
   let timer = null;
 
   function stopTimer() {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
     playBtn.textContent = "play";
   }
@@ -381,6 +388,16 @@ function createGrowthDemo({
     step();
   });
 
+  // Re-picks the delay before every tick so autoplay actually speeds up
+  // from prefill's 700ms to decode's 550ms once i crosses prefillCount,
+  // instead of locking in whichever delay applied when play was clicked.
+  function scheduleTick() {
+    timer = setTimeout(() => {
+      step();
+      if (timer) scheduleTick();
+    }, i < prefillCount ? 700 : 550);
+  }
+
   playBtn.addEventListener("click", () => {
     if (timer) {
       stopTimer();
@@ -388,7 +405,7 @@ function createGrowthDemo({
     }
     if (i >= tokens.length) i = 0;
     playBtn.textContent = "pause";
-    timer = setInterval(step, i < prefillCount ? 700 : 550);
+    scheduleTick();
   });
 
   resetBtn.addEventListener("click", () => {

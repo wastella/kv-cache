@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FINCH — kv/cache</title>
+  <meta name="description" content="SnapKV-style prediction, but the observation window is sized to match the question automatically instead of a fixed hyperparameter: FINCH, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/finch.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/finch.html" />
+  <meta property="og:title" content="FINCH — kv/cache" />
+  <meta property="og:description" content="SnapKV-style prediction, but the observation window is sized to match the question automatically instead of a fixed hyperparameter: FINCH, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="FINCH — kv/cache" />
+  <meta name="twitter:description" content="SnapKV-style prediction, but the observation window is sized to match the question automatically instead of a fixed hyperparameter: FINCH, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / prediction-based</p>
+      <h1>FINCH</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> SnapKV uses attention from the end of the prompt to predict what
+        matters, but has to guess ahead of time how many tokens that
+        "end of the prompt" window should cover. FINCH removes the guess:
+        it detects exactly where the question starts and sizes the window
+        to match it, automatically, on every request.
+      </p>
+
+      <h2>A window that has to match the question</h2>
+      <p>
+        SnapKV's observation window is a fixed hyperparameter,
+        <code>window_size</code>, chosen once and applied to every request.
+        That's a mismatch waiting to happen: a three-token question gets
+        padded out with irrelevant prompt tokens if the window is set too
+        wide, and a long, detailed question gets truncated if it's set too
+        narrow. Corallo and Papotti's fix is structural rather than
+        tunable: FINCH expects the input formatted as
+        <code>context + delimiter token + question</code>, and reads the
+        window size directly off wherever that delimiter lands, so the
+        window is exactly as long as the actual question, every time,
+        with nothing to tune.
+      </p>
+      <p>
+        The delimiter itself never reaches the model. kvpress hooks the
+        embedding layer during prefill, finds the delimiter's position in
+        the input ids, computes <code>window_size</code> as everything
+        after it, and strips the delimiter's embedding out of what
+        actually gets processed. From there the scoring is SnapKV's core
+        idea: average how much attention the window pays to every earlier
+        context token, and keep the top-scorers. FINCH adds one extra
+        step before that averaging: each window position's attention row
+        gets scaled by how many earlier tokens it could see under causal
+        masking, so a window position deeper into the window (which sees
+        more of the sequence) doesn't get diluted relative to one nearer
+        the start. Like SnapKV, the window's own score is padded to the
+        maximum afterward, so ranking can never prune it out.
+      </p>
+      <p>
+        One more thing FINCH does that SnapKV doesn't: when
+        <code>rerotate_keys</code> is on (the default), surviving keys get
+        their RoPE rotation reapplied as if the kept tokens had always sat
+        contiguously, rather than left at their original positions with
+        gaps where evicted tokens used to be.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Move <code>question length</code> and watch the outlined window
+        resize with it: there's no separate window-size knob to tune, the
+        window <em>is</em> the question, however long it turns out to be.
+        Darker earlier tokens received more simulated attention from that
+        window and are more likely to survive.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> The "attention from the
+        window" here is generated locally with a distance-decay term plus
+        a few random topical-match spikes, the same illustrative stand-in
+        used on the SnapKV page, not extracted from a real model. This
+        demo also doesn't reproduce FINCH's causal-masking correction step
+        or its key re-rotation; both are described above but aren't
+        something a token-keep/evict grid can show.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        FINCH targets the same shape of workload SnapKV does, long context
+        with a clear question at the end, RAG, document QA, but with one
+        less thing to tune, since the window size is read off the input
+        instead of guessed. The paper reports compression up to 93x
+        without any fine-tuning. The cost is a stricter contract on the
+        input: FINCH needs a literal delimiter token inserted between
+        context and question, which means resizing the model's token
+        embeddings and running a tokenizer update before the press can be
+        used at all, and it needs that context-then-question structure to
+        actually be present. Methods that score every step fresh, like
+        TOVA, or accumulate attention as it happens, like H2O, don't need
+        any assumption about where the "real" question lives in the input;
+        FINCH does, and if the input doesn't have that shape, there's no
+        delimiter to detect and no window to size.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>FinchPress</code>, whose
+        <code>score()</code> mirrors <code>SnapKVPress</code> with an added
+        normalization step, and whose <code>embed_token_forward_hook</code>
+        detects the delimiter token during prefill to set
+        <code>window_size</code> dynamically.
+        <code>update_model_and_tokenizer()</code> must be called first to
+        register the delimiter. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/finch_press.py" target="_blank" rel="noopener">finch_press.py</a>.
+        Original paper:
+        <a href="https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00716/125280" target="_blank" rel="noopener">Corallo, Papotti, "Finch: Prompt-guided Key-Value Cache Compression," TACL, 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeFinch(tokens, params) {
+      const N = tokens.length;
+      const winSize = Math.min(Math.round(params.questionLength), N);
+      const obsStart = Math.max(0, N - winSize);
+
+      const raw = new Array(N).fill(0);
+      for (let i = 0; i < obsStart; i++) {
+        let s = 0;
+        for (let q = obsStart; q < N; q++) {
+          const dist = q - i;
+          const base = Math.exp(-dist / 12);
+          const topicMatch = seeded(tokens[i] + tokens[q] + "finch") < 0.14 ? 1.1 : 0;
+          s += base * 0.3 + topicMatch;
+        }
+        raw[i] = s;
+      }
+      const windowFloor = Math.max(...raw.slice(0, obsStart), 0) + 0.05;
+      for (let i = obsStart; i < N; i++) raw[i] = windowFloor;
+
+      const alwaysKeep = new Set();
+      const tags = new Map();
+      for (let i = obsStart; i < N; i++) {
+        alwaysKeep.add(i);
+        tags.set(i, ["window"]);
+      }
+
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const remaining = Math.max(0, budget - alwaysKeep.size);
+      const ranked = raw
+        .map((s, i) => [s, i])
+        .filter(([, i]) => !alwaysKeep.has(i))
+        .sort((a, b) => b[0] - a[0]);
+      const kept = new Set([...alwaysKeep, ...ranked.slice(0, remaining).map((p) => p[1])]);
+
+      return { kept, scores: normalize(raw), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "FINCH: window sized to the question, not a fixed hyperparameter",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "questionLength", label: "question length", min: 2, max: 10, step: 1, default: 4 },
+      ],
+      compute: computeFinch,
+    });
+  </script>
+</body>
+</html>

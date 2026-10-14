@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CUR — kv/cache</title>
+  <meta name="description" content="Score cached tokens by both key and value magnitude, judged against nearby tokens rather than the whole sequence: CUR (CurDKV), interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/cur.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/cur.html" />
+  <meta property="og:title" content="CUR — kv/cache" />
+  <meta property="og:description" content="Score cached tokens by both key and value magnitude, judged against nearby tokens rather than the whole sequence: CUR (CurDKV), interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="CUR — kv/cache" />
+  <meta name="twitter:description" content="Score cached tokens by both key and value magnitude, judged against nearby tokens rather than the whole sequence: CUR (CurDKV), interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / norm-based</p>
+      <h1>CUR</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> <a href="knorm.html">Knorm</a> scores a token by its key vector's own
+        length. CUR (kvpress calls the underlying method
+        <code>CurDKV</code>) scores it by both its key <em>and</em> value
+        vector's length, multiplied together, and judges that magnitude
+        against a small local neighborhood of nearby tokens rather than the
+        whole cached sequence.
+      </p>
+
+      <h2>Leverage scores, borrowed from matrix decomposition</h2>
+      <p>
+        Sengupta, Chaudhary, and Chakraborty motivate this from CUR matrix
+        decomposition: a classic technique for approximating a large matrix
+        by keeping a subset of its actual rows and columns rather than some
+        abstract low-rank combination of them. Which rows and columns to
+        keep is decided by <strong>leverage scores</strong>, a measure of
+        how much each row or column contributes to reconstructing the
+        original matrix, and one cheap, well-known approximation to a row's
+        leverage score is simply its own squared magnitude relative to the
+        others. Applied to a KV cache, that means: a cached token's key and
+        value vectors are rows of the (growing) key and value matrices, and
+        their squared norms approximate how much removing that row would
+        actually hurt reconstructing those matrices.
+      </p>
+      <p>
+        In code this is nothing more exotic than two sums of squares.
+        kvpress's <code>CURPress.score()</code> computes
+        <code>k2 = (keys**2).sum(dim=-1)</code> and
+        <code>v2 = (values**2).sum(dim=-1)</code>, literally each token's
+        squared key-vector and value-vector L2 norm. (There's also an
+        optional <code>use_random_leverage</code> mode, off by default, that
+        first projects keys and values through a random Gaussian matrix
+        before squaring: a cheaper, randomized leverage-score estimate,
+        common in the CUR-decomposition literature, that this demo doesn't
+        expose.)
+      </p>
+      <p>
+        Worth flagging directly: this scores in the <em>opposite</em>
+        direction from Knorm. Knorm evicts high-norm keys because Devoto et
+        al. found, empirically, that low-norm keys receive more future
+        attention. CUR's default keeps <em>high</em>-norm keys and values,
+        because its leverage-score framing targets a different objective:
+        approximating the K/V matrices themselves as well as possible, not
+        predicting attention weights. That's not a contradiction so much as
+        two methods optimizing for different things; which one produces a
+        better cache in practice is an empirical question the CUR paper
+        answers on its own benchmark suite, not something derivable from the
+        formulas alone.
+      </p>
+
+      <h2>Judged locally, not globally</h2>
+      <p>
+        By default (<code>use_local_approximation=True</code>), CUR doesn't
+        compare a token's magnitude against the entire cached sequence. It
+        splits the sequence into non-overlapping windows of
+        <code>local_window_size</code> tokens (16 by default) and
+        renormalizes <code>k2</code> and <code>v2</code> to sum to 1
+        <em>within each window</em> before combining them. A token's score
+        is really "how large is this token relative to just its own nearby
+        neighbors," not "relative to the whole prompt." The two per-token
+        signals are then combined by <code>leverage_type</code>, default
+        <code>"kv_product"</code>: an elementwise product, so a token needs
+        to be locally salient in <em>both</em> key and value magnitude to
+        score highly (the alternatives, <code>"kv_avg"</code>,
+        <code>"key"</code>, and <code>"value"</code>, aren't exposed in the
+        demo below). Scores are then renormalized once more across the
+        whole sequence, and the first <code>num_sinks</code> tokens (4 by
+        default) are forced to the top of the range, so they're the last
+        thing cut when the budget gets tight, similar to the sink-token
+        treatment <a href="streaming-llm.html">StreamingLLM</a> uses (though
+        StreamingLLM's sink is unconditional, not just rank-boosted).
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Shade tracks each token's score after local-window normalization and
+        the key x value product. The double-bordered tokens at the start are
+        the forced sinks.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There are no real key or
+        value vectors here. Each token gets a synthetic "k2" and "v2"
+        assigned deterministically from its text, purely to demonstrate the
+        local-window normalization and product rule real
+        <code>CURPress</code> applies once actual key/value vectors come out
+        of a forward pass.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Like Knorm, CUR's scoring is cheap: it needs nothing beyond the
+        key and value vectors that already exist as a byproduct of the
+        model's forward pass, no attention matrix or observation window
+        required. The paper reports up to 9.6% higher accuracy than SnapKV
+        and ChunkKV on its evaluation, and up to a 40% generation-latency
+        reduction at high compression ratios. The local-window design is
+        also a deliberate tradeoff: judging a token against only its
+        immediate neighbors means a genuinely unique, isolated token can
+        still lose to a merely-large neighbor within its own window even if
+        it would have ranked well globally, and the window size itself
+        becomes another hyperparameter to tune per model or task, on top of
+        the compression ratio.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>CURPress</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/cur_press.py" target="_blank" rel="noopener">cur_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2509.15038" target="_blank" rel="noopener">Sengupta, Chaudhary, Chakraborty, "Value-Guided KV Compression for LLMs via Approximated CUR Decomposition," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeCUR(tokens, params) {
+      const N = tokens.length;
+      const w = Math.max(1, Math.round(params.windowSize));
+      const nSinks = Math.min(Math.round(params.numSinks), N);
+
+      // Simulated per-token squared norms, standing in for
+      // (keys**2).sum(-1) and (values**2).sum(-1). Real CURPress computes
+      // these from actual key/value vectors; there's no forward pass here.
+      const k2 = tokens.map((tok, i) => 0.1 + seeded(tok + i + "cur-k2") * 0.9);
+      const v2 = tokens.map((tok, i) => 0.1 + seeded(tok + i + "cur-v2") * 0.9);
+
+      // Local-window renormalization (use_local_approximation=True, the
+      // kvpress default): each non-overlapping window of size `w` is
+      // renormalized to sum to 1 within itself, so a token competes against
+      // its neighbors, not the whole sequence.
+      function windowNormalize(arr) {
+        const out = new Array(N);
+        for (let start = 0; start < N; start += w) {
+          const end = Math.min(start + w, N);
+          let sum = 0;
+          for (let i = start; i < end; i++) sum += arr[i];
+          for (let i = start; i < end; i++) out[i] = sum > 0 ? arr[i] / sum : 0;
+        }
+        return out;
+      }
+      const k2n = windowNormalize(k2);
+      const v2n = windowNormalize(v2);
+
+      // leverage_type="kv_product", the kvpress default: elementwise
+      // product of the two locally-normalized magnitudes.
+      let scores = k2n.map((k, i) => k * v2n[i]);
+
+      // Global renormalize across the whole sequence: scores /= scores.sum()
+      const total = scores.reduce((a, b) => a + b, 0) || 1;
+      scores = scores.map((s) => s / total);
+
+      // First num_sinks tokens forced to the top of the range. Real
+      // CURPress sets scores[:, :, :num_sinks] = 1.0.
+      const tags = new Map();
+      for (let i = 0; i < nSinks; i++) {
+        scores[i] = 1.0;
+        tags.set(i, ["sink"]);
+      }
+
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = scores.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(scores), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "CUR: local key x value leverage score",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "windowSize", label: "local window size", min: 2, max: 16, step: 1, default: 16 },
+        { key: "numSinks", label: "sink tokens", min: 0, max: 8, step: 1, default: 4 },
+      ],
+      compute: computeCUR,
+    });
+  </script>
+</body>
+</html>

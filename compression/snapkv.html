@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="SnapKV — kv/cache" />
   <meta name="twitter:description" content="Predict which tokens will matter using attention from the end of the prompt, before generation starts: SnapKV, interactively explained." />
@@ -43,16 +43,16 @@
       <p class="kicker"><a href="index.html" class="quiet">compression</a> / prediction-based</p>
       <h1>SnapKV</h1>
       <p class="lede">
-        StreamingLLM and H2O both operate during generation, evicting as new
-        tokens arrive. SnapKV does its compression once, at the end of
-        prefill — before a single token has been generated — by using the end
-        of the prompt itself as a preview of what the model is about to ask for.
+        <strong>TL;DR:</strong> Instead of evicting continuously as new tokens are generated,
+        SnapKV does its compression once, at the end of prefill, before a
+        single token has been generated, by using the end of the prompt
+        itself as a preview of what the model is about to ask for.
       </p>
 
       <h2>The prompt already tells you what it needs</h2>
       <p>
         Li et al. observed that the attention pattern of the last few tokens
-        of a prompt — the <strong>observation window</strong> — is a strong
+        of a prompt, the <strong>observation window</strong>, is a strong
         predictor of what the model will keep attending to during generation.
         Intuitively: the tail end of a prompt (often an instruction, like "…
         summarize the above" or "… answer the question below") is where the
@@ -60,33 +60,33 @@
         parts of the context that matter for that intent.
       </p>
       <p>
-        So instead of waiting to observe attention during generation like H2O,
+        So instead of waiting to observe attention as generation happens,
         SnapKV computes, once, how much attention each token in the
         observation window pays to every earlier token, pools those scores
         together, and keeps the top-scoring tokens (plus the window itself).
-        The rest of the cache is compressed before generation even begins —
+        The rest of the cache is compressed before generation even begins,
         which means the memory savings start immediately, not gradually.
       </p>
 
       <h2>Try it</h2>
       <div id="demo"></div>
       <p class="muted" style="font-size:12.5px;">
-        The last tokens (outlined) are the observation window — always kept.
+        The last tokens (outlined) are the observation window, always kept.
         Darker earlier tokens received more simulated attention from that
         window and are more likely to survive compression.
       </p>
       <div class="note">
-        <strong>Simulated, not measured.</strong> As with the H2O demo, the
-        "attention from the observation window" here is generated locally
-        with a distance-decay term plus a few random topical-match spikes —
-        illustrative of the mechanism, not extracted from a real model.
+        <strong>Simulated, not measured.</strong> The "attention from the
+        observation window" here is generated locally with a distance-decay
+        term plus a few random topical-match spikes, illustrative of the
+        mechanism, not extracted from a real model.
       </div>
 
       <h2>Where this shines, and where it doesn't</h2>
       <p>
         Because it works entirely from the prompt, SnapKV is a strong fit for
-        long-document workloads with a short, focused instruction at the end
-        — RAG, document QA, summarization of a known task. It compresses once
+        long-document workloads with a short, focused instruction at the end:
+        RAG, document QA, summarization of a known task. It compresses once
         and is done, with no ongoing scoring overhead during decode. The
         assumption it leans on is also its main limitation: if the
         instruction is vague, appears before the relevant context rather than
@@ -102,7 +102,7 @@
         earlier one, averages it across those queries, then runs it through a
         small average-pooling kernel before ranking. That pooling step is
         what keeps neighboring important tokens together instead of scattering
-        the surviving set across isolated positions — the SnapKV paper found
+        the surviving set across isolated positions: the SnapKV paper found
         that keeping only scattered top-scorers, without pooling, tends to
         chop up the context and drop tokens a later one still needed. The
         window itself is padded to the max score so the ranking can never
@@ -114,7 +114,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -147,7 +147,9 @@
         tags.set(i, ["window"]);
       }
 
-      const budget = Math.max(alwaysKeep.size, Math.round(N * (1 - params.ratio)));
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(alwaysKeep.size, Math.floor(N * (1 - params.ratio)));
       const remaining = budget - alwaysKeep.size;
       const ranked = raw
         .map((s, i) => [s, i])
@@ -161,7 +163,7 @@
     createCompressionDemo({
       root: document.getElementById("demo"),
       tokens: SAMPLE_TOKENS,
-      label: "SnapKV — observation-window attention",
+      label: "SnapKV: observation-window attention",
       controls: [
         { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
         { key: "windowSize", label: "observation window", min: 2, max: 8, step: 1, default: 4 },

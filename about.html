@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="About — kv/cache" />
   <meta name="twitter:description" content="Why this site exists and how it relates to NVIDIA's kvpress library." />
@@ -41,6 +41,7 @@
 
     <main>
       <h1>About</h1>
+      <h2>Why I made kv/cache</h2>
       <p class="lede">
         I built kv/cache while doing independent research into KV cache compression.
         The papers and source code are all out there, but I found the intuition
@@ -50,69 +51,35 @@
         through the same material.
       </p>
 
-      <h2>Relationship to kvpress</h2>
-      <p>
+      <p class="lede">
         The catalogue is a companion to
         <a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA's kvpress</a>,
-        an open-source (Apache-2.0) library that implements 40+ KV cache
-        compression methods behind one API for Hugging Face Transformers models.
-        The scoring logic on each catalogue page is written to match kvpress's
-        real implementation, and every page links to the exact source file it's
-        based on.
+        an open-source library that implements all of the compression methods found on this website. I used their library to tinker around with various methods when I first started learning about kv-caches, and I would highly recommend it.
       </p>
-      <p>
-        This site is independent and unofficial — it is not affiliated with,
+      <p class="lede">
+        However, this site is independent and unofficial: it isn't affiliated with,
         endorsed by, or reviewed by NVIDIA. If something here misrepresents how
-        a method actually works, that's my error, not theirs; <a href="contact.html">let me know</a>.
-      </p>
-
-      <h2>Why these methods, and why in this order</h2>
-      <p>
-        kvpress groups its presses into a few conceptual families: rule-based
-        eviction by position, scoring by observed or predicted attention,
-        norm-based scoring, layer-wise budget allocation, dimension pruning,
-        quantization, and low-rank/merging. The catalogue currently covers
-        eight methods spanning most of those families — StreamingLLM, H2O,
-        and SnapKV were the first stop because they're the most-cited starting
-        points in the compression literature, and the rest were added to show
-        how differently the other families approach the same problem.
-        Merging/low-rank methods (e.g. CaM, KVzip) aren't covered yet.
-      </p>
-
-      <h2>Why compression is grouped into stages</h2>
-      <p>
-        Most of the <a href="compression/index.html">compression</a> page is
-        kvpress "presses" — things applied to an already-trained model at
-        inference time. But shrinking a KV cache isn't only an inference-time
-        decision: some of the field's most important ideas are decided when a
-        model is <em>trained</em>, not when it's served (grouped/multi-query
-        attention, DeepSeek's latent attention), or aren't compression at all
-        in the scoring sense — how a serving system like vLLM allocates cache
-        memory, how anyone measures whether a compression method actually
-        held up. Calling all of it a "press" would misrepresent kvpress, so
-        the compression page groups these as separate subsections —
-        inference-time, architecture-level, systems, and evaluation — instead
-        of implying they're interchangeable.
+        a method actually works, please <a href="contact.html">let me know</a>.
       </p>
 
       <h2>A note on the demos</h2>
-      <p>
-        The interactive sandboxes run entirely in your browser — nothing is
+      <p class="lede">
+        The interactive sandboxes run entirely in your browser. Nothing is
         sent to a server, and no model runs live in your browser. Where a
         method's scoring depends on real attention weights (H2O, SnapKV), the
         demo uses a small simulated score generator that mirrors the shape of
         real attention distributions, so you can see the algorithm's logic
         clearly without needing to load an actual model. That's flagged on
         each page. The one exception is <a href="basics.html">basics</a>'s
-        cache-growth demo: its Q/K/V numbers are real, pulled from an actual
-        GPT-2 (124M) forward pass computed offline (<code>tools/gen_gpt2_qkv.py</code>)
-        and shipped as static data — not simulated, but not live either.
+        cache-growth demo. Its Q/K/V numbers are real, but pulled from an actual
+        GPT-2 (124M) forward pass computed offline
+        and shipped as static data.
       </p>
 
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>

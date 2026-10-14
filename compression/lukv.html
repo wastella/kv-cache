@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LU-KV — kv/cache</title>
+  <meta name="description" content="Give every layer and every attention head its own cache budget, pulled from a curve fit offline instead of a hand-picked formula: LU-KV, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/lukv.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/lukv.html" />
+  <meta property="og:title" content="LU-KV — kv/cache" />
+  <meta property="og:description" content="Give every layer and every attention head its own cache budget, pulled from a curve fit offline instead of a hand-picked formula: LU-KV, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="LU-KV — kv/cache" />
+  <meta name="twitter:description" content="Give every layer and every attention head its own cache budget, pulled from a curve fit offline instead of a hand-picked formula: LU-KV, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / layer-wise</p>
+      <h1>LU-KV</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> <a href="pyramidkv.html">PyramidKV</a> gives every layer a shrinking
+        share of one global compression ratio, using a single hand-picked
+        pyramid formula, the same shape for every model. LU-KV asks the
+        same "how much budget does each layer need" question, but per
+        attention head as well as per layer, and instead of a formula, the
+        shape comes from a curve fit ahead of time on real data for one
+        specific model.
+      </p>
+
+      <h2>Still a budget wrapper, not a scorer</h2>
+      <p>
+        Like PyramidKV, LU-KV doesn't decide <em>which</em> tokens survive
+        within a budget: it wraps a <code>ScorerPress</code> (defaulting to
+        kvpress's <code>ExpectedAttentionPress</code>) and lets that
+        scorer's own <code>.score()</code> rank tokens as usual. Where
+        PyramidKV is implemented as a subclass of <code>SnapKVPress</code>
+        that overrides only the budget calculation, LU-KV is a genuine
+        wrapper that can take any scorer as an argument, and it decides
+        budgets at a finer grain: not one number per layer, but one number
+        per <em>(layer, KV head)</em> pair.
+      </p>
+
+      <h2>A curve instead of a formula</h2>
+      <p>
+        The budget comes from a precomputed array shaped
+        <code>[99, num_layers, num_kv_heads]</code>: one row per integer
+        compression-ratio percentage from 1% to 99%. Given a target ratio,
+        LU-KV looks up <code>target_idx = round(ratio * 100) - 1</code> and
+        reads off, for the current layer, a prune fraction <em>per KV
+        head</em>. Those per-head keep counts get apportioned with a
+        largest-remainder method familiar from apportioning parliamentary
+        seats: floor each head's ideal count, then hand the leftover slots
+        to whichever heads had the largest fractional remainder, so the
+        total across all heads lands exactly on the intended sum instead of
+        drifting from independent rounding.
+      </p>
+      <p>
+        Where does the curve come from? Per its abstract, LU-KV frames
+        head-level budget allocation as "a global combinatorial
+        optimization problem to maximize the long-horizon marginal
+        contribution of reserved tokens": the curve is the output of an
+        actual optimization run, not a shape someone picked by hand. That
+        also means it isn't free the way a formula is. Generating a curve
+        requires LU-KV's own companion repository: a <code>step1</code>
+        pass that extracts per-context scorer statistics by actually
+        running the target model over a dataset, then a <code>step2</code>
+        pass that computes the averaged layer/head curve from those
+        statistics. kvpress bundles exactly one ready-made curve, for
+        Llama-3.1-8B-Instruct paired with
+        <code>ExpectedAttentionPress(epsilon=0.02)</code>, sink 4, window
+        1, fetched over HTTP from a raw GitHub URL the first time that
+        exact model gets registered, then cached. Ask for any other
+        (model, scorer) combination and LU-KV raises a <code>KeyError</code>
+        rather than falling back to anything: there's no generic version of
+        this that works on any model out of the box the way PyramidKV's
+        formula does.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        Same per-layer bar-chart format as the PyramidKV page. Unlike that
+        page, there's no <code>beta</code> or window-size knob to drag here,
+        because LU-KV has no shape parameter: the shape is whatever the
+        curve says it is.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Each bar is one layer's kept-token budget out of 29, aggregated
+        across a stand-in set of KV heads.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> The real curve is a
+        <code>[99, num_layers, num_kv_heads]</code> array generated offline
+        by actually running Llama-3.1-8B-Instruct over a dataset with
+        Expected Attention, and it isn't something a browser can
+        reproduce. This chart fakes an illustrative, irregular per-layer
+        shape purely to make one point concretely: unlike PyramidKV's
+        smooth, monotonic pyramid, a real data-driven curve doesn't have to
+        be monotonic at all, it can bump up and down per layer in ways a
+        hand-picked formula never would. The <code>target_idx</code>
+        lookup itself, and the floor-based per-layer keep count, do mirror
+        the real formula.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because the curve is an actual optimization result rather than a
+        hand-picked shape, it can in principle capture an irregular,
+        non-monotonic allocation across layers and heads that reflects
+        whatever a specific model actually does, something a single global
+        <code>beta</code> shaping a smooth pyramid can never represent no
+        matter how it's tuned. That's a strictly more expressive
+        parameterization than PyramidKV's, at the cost of needing far more
+        than a formula and a couple of scalar hyperparameters to produce
+        it. The tradeoff shows up immediately outside the one bundled
+        configuration: LU-KV isn't usable on a model or scorer combination
+        nobody has already profiled, and that <code>KeyError</code> is the
+        real price of the extra expressiveness. Generating a new curve
+        means running an actual model over an actual dataset offline
+        first, not tweaking a hyperparameter. It also inherits whatever the
+        wrapped scorer gets wrong, same as PyramidKV, and the one bundled
+        curve ties out-of-the-box behavior to one specific model, one
+        specific scorer configuration, and one specific sink/window
+        setting; step outside those and you're either building your own
+        curve or you're not using LU-KV at all.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>LUKVPress</code>. See the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/lukv_press.py" target="_blank" rel="noopener">lukv_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2602.08585" target="_blank" rel="noopener">Tang, Jiao, Chen, Liu, Li, Chen, "Predicting Future Utility: Global Combinatorial Optimization for Task-Agnostic KV Cache Eviction," 2026</a>,
+        whose abstract states LU-KV "reduces KV cache size by 80% with
+        minimal performance degradation." Curve-generation pipeline:
+        <a href="https://github.com/baidu-baige/LU-KV" target="_blank" rel="noopener">baidu-baige/LU-KV</a>
+        on GitHub.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const LUKV_LAYERS = 12;
+
+    // Python's round() is round-half-to-even, not round-half-up like
+    // JS's Math.round(). The real target_idx computation calls Python's
+    // round() on compression_ratio * 100, so matching it exactly (not
+    // just "close enough") requires the same tie-breaking rule.
+    function luRound(x) {
+      const floor = Math.floor(x);
+      const diff = x - floor;
+      if (diff < 0.5) return floor;
+      if (diff > 0.5) return floor + 1;
+      return floor % 2 === 0 ? floor : floor + 1;
+    }
+
+    // Illustrative stand-in for a real LU-KV budget curve: irregular and
+    // non-monotonic per layer, on purpose, unlike PyramidKV's smooth
+    // pyramid. Not derived from any real optimization or real data.
+    function fakePruneRatio(layer, targetIdx) {
+      const base = (targetIdx + 1) / 99;
+      const wobble = (seeded("lukv-" + layer + "-" + targetIdx) - 0.5) * 0.5;
+      return Math.min(0.97, Math.max(0.03, base + wobble));
+    }
+
+    function createLUKVDemo({ root, tokens }) {
+      const N = tokens.length;
+      const params = { ratio: 0.5 };
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("LU-KV: per-layer cache budget out of " + N + " (illustrative curve)")]));
+
+      const chart = el("div", { class: "layer-chart" });
+      root.appendChild(chart);
+
+      const rows = [];
+      for (let l = 0; l < LUKV_LAYERS; l++) {
+        const fill = el("div", { class: "layer-bar-fill" });
+        const track = el("div", { class: "layer-bar-track" }, [fill]);
+        const value = el("div", { class: "layer-value" }, [document.createTextNode("—")]);
+        const row = el("div", { class: "layer-row" }, [
+          el("div", { class: "layer-label" }, [document.createTextNode("layer " + l)]),
+          track,
+          value,
+        ]);
+        chart.appendChild(row);
+        rows.push({ fill, value });
+      }
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const inputId = "lukv-ratio";
+      const valSpan = el("span", { class: "val" }, [document.createTextNode(Math.round(params.ratio * 100) + "%")]);
+      const labelRow = el("label", { for: inputId }, [document.createTextNode("compression ratio "), valSpan]);
+      const input = el("input", { type: "range", id: inputId, min: 0.01, max: 0.99, step: 0.01, value: params.ratio });
+      input.addEventListener("input", () => {
+        params.ratio = parseFloat(input.value);
+        valSpan.textContent = Math.round(params.ratio * 100) + "%";
+        render();
+      });
+      controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statMin = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("smallest layer budget")]),
+      ]);
+      const statMax = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("largest layer budget")]),
+      ]);
+      const statAvg = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("avg. cache size")]),
+      ]);
+      statsWrap.appendChild(statMin);
+      statsWrap.appendChild(statMax);
+      statsWrap.appendChild(statAvg);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const targetIdx = Math.max(0, Math.min(98, luRound(params.ratio * 100) - 1));
+        const budgets = [];
+        for (let l = 0; l < LUKV_LAYERS; l++) {
+          const pruneRatio = fakePruneRatio(l, targetIdx);
+          // Real LU-KV floors each head's ideal keep count, then
+          // redistributes leftover slots by largest remainder; this demo
+          // shows the floor step only, aggregated as one bar per layer.
+          budgets.push(Math.max(1, Math.floor(N * (1 - pruneRatio))));
+        }
+
+        budgets.forEach((b, l) => {
+          const pct = Math.round((b / N) * 100);
+          rows[l].fill.style.width = pct + "%";
+          rows[l].value.textContent = `${b} / ${N}`;
+        });
+
+        statMin.firstChild.textContent = String(Math.min(...budgets));
+        statMax.firstChild.textContent = String(Math.max(...budgets));
+        const avg = budgets.reduce((a, b) => a + b, 0) / budgets.length;
+        statAvg.firstChild.textContent = Math.round((avg / N) * 100) + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createLUKVDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>

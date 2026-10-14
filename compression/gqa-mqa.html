@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="kv/cache — an interactive field guide to KV cache compression" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="GQA / MQA — kv/cache" />
   <meta name="twitter:description" content="Share key/value heads across query heads and the cache shrinks before a single token is ever evicted: GQA and MQA, interactively explained." />
@@ -40,84 +40,65 @@
     </header>
 
     <main>
-      <p class="kicker"><a href="index.html" class="quiet">compression</a> / architecture-level</p>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / architecture</p>
       <h1>GQA / MQA</h1>
       <p class="lede">
-        Every page in the catalogue changes what an already-trained model
-        does — evicting tokens, quantizing numbers, shrinking per-layer
-        budgets — without touching a single weight. Grouped-Query and
-        Multi-Query Attention are decided before any of that: they change
-        how many key/value heads the model <em>has</em>, so the cache starts
-        out smaller at the very first token, before any press gets a chance
-        to compress anything.
+        <strong>TL;DR:</strong> Share key/value heads across query heads instead of giving every
+        query head its own. Fewer distinct K/V vectors per token means
+        the cache gets smaller. Multi-Query
+        Attention takes the sharing all the way down to one head and
+        Grouped-Query Attention stops partway, at a handful of groups.
       </p>
 
-      <h2>Multi-head attention's hidden cost</h2>
+      <h2>Multi-head attention</h2>
       <p>
         In ordinary multi-head attention, every query head gets its own key
         head and its own value head. A layer with 32 query heads computes
         and caches 32 separate K vectors and 32 separate V vectors per
-        token — the cache grows linearly with <code>num_heads</code>, on top
-        of growing linearly with sequence length. Nothing about the
-        attention mechanism requires that one-to-one pairing between query
-        heads and key/value heads; it's just the default architecture
-        choice, and it's the one lever GQA and MQA reach for.
+        token, meaning the cache grows linearly with <code>num_heads</code>, on top
+        of growing linearly with <code>sequence length</code>. GQA and MQA challenge that architectural choice to compress the cache.
       </p>
 
       <h2>Two ways to break the pairing</h2>
       <p>
-        Shazeer's observation: autoregressive decoding is usually bottlenecked
-        by memory bandwidth, not compute. Every decoding step has to reload
-        the entire key/value cache, and that cost scales with
-        how many distinct K/V vectors exist per token, not with how much
-        arithmetic the model does. <strong>Multi-Query Attention</strong>
-        (MQA) is the blunt fix: collapse every query head down to a single
+        The key observation is that the decoding stage is usually bottlenecked
+        by memory bandwidth, not compute. Every step has to reload
+        the entire key/value cache, which is the main cost when generating tokens. <strong>Multi-Query Attention</strong>
+        (MQA) fixes this by collapsing every query head down to a single
         shared K vector and a single shared V vector. Cache size drops by a
-        factor of <code>num_heads</code> — 32 heads means a 32x smaller
-        cache — at the cost of some quality, which the paper reports as
+        factor of <code>num_heads</code> (32 heads means a 32x smaller
+        cache) at the cost of some quality, which the paper reports as
         "much faster [decoding]... with only minor quality degradation."
       </p>
       <p>
         MQA's cut is extreme enough that it starts to hurt more as models
-        get larger. Ainslie et al. proposed the interpolation:
-        <strong>Grouped-Query Attention</strong> (GQA) splits query heads
+        get larger.
+        <strong>Grouped-Query Attention</strong> (GQA) is a gentler option. It splits query heads
         into <code>G</code> groups and lets every head within a group share
         one K/V head. <code>G = 1</code> recovers MQA exactly;
         <code>G = num_heads</code> recovers ordinary multi-head attention;
         anything in between is a tunable knob on the memory/quality
-        tradeoff. Their paper also gave existing checkpoints a way in
-        without retraining from scratch: "uptrain" an already-pretrained
-        multi-head model into a grouped-query one using roughly
-        <strong>5% of its original pretraining compute</strong>, converting
-        by averaging each group's existing key/value heads together into
-        one. The result they report: "quality close to multi-head attention
+        tradeoff. By doing this, they achieve "quality close to multi-head attention
         with comparable speed to multi-query attention."
       </p>
 
       <h2>Try it</h2>
       <div id="demo"></div>
-      <p class="muted" style="font-size:12.5px;">
-        8 illustrative query heads, grouped down to however many key/value
-        heads the slider allows. Drag it to 1 and every query head shares
-        one K/V head — MQA. Drag it to 8 and every query head gets its own —
-        full MHA. At 1 shared head, this demo's 8:1 ratio matches Llama 2
-        and Llama 3's 70B models exactly: 64 query heads, 8 key/value heads.
-      </p>
 
       <h2>A knob you can't turn at inference time</h2>
       <p>
-        A press like SnapKV or StreamingLLM runs against whatever cache a
-        model produces, on any model, at request time — you can turn the
+        An inference-time compression method runs against whatever cache a
+        model produces, on any model, at request time: you can turn the
         compression ratio up or down per call. GQA and MQA don't work that
         way: the number of key/value heads is baked into the model's
         weights, chosen (or converted into, via uptraining) before it's
-        ever served. You cannot point a GQA-style press at a plain MHA
-        checkpoint and get this saving for free; the model has to have been
-        built, or converted, with fewer K/V heads in the first place. What
-        the catalogue's presses <em>can</em> do is stack on top of it — a
-        press evicting half the cache of a GQA model is still evicting half
-        of a cache that started out several times smaller than an MHA
-        model's would have.
+        ever served. You cannot point an inference-time method at a plain
+        MHA checkpoint and get this saving for free; the model has to have
+        been built, or converted, with fewer K/V heads in the first place.
+        What inference-time compression <em>can</em> do is stack on top of
+        it: a method evicting half the cache of a GQA model is still
+        evicting half of a cache that started out several times smaller
+        than an MHA model's would have.
       </p>
 
       <h2>Where this shines, and where it doesn't</h2>
@@ -130,10 +111,15 @@
         still shows up where memory bandwidth matters more than the last bit
         of quality. The real limitation is inflexibility: the group count is
         a single number chosen once for the whole model, not something that
-        can be dialed differently per request, per layer's actual need
-        (that's closer to what PyramidKV does, on the catalogue side), or
+        can be dialed differently per request, per layer's actual need, or
         adjusted after the fact if it turns out to be too aggressive for
-        some downstream task.
+        some downstream task. <a href="mla.html">MLA</a> is the other
+        architecture-time answer to the same cache-size problem, via a
+        different mechanism (a shared low-rank bottleneck instead of head
+        sharing). And whatever the cache ends up shrunk to here, a serving
+        system still has to place it in GPU memory efficiently, which is
+        <a href="paged-attention.html">PagedAttention</a>'s job, not this
+        page's.
       </p>
 
       <h3>Real implementation</h3>
@@ -141,7 +127,7 @@
         Original papers: <a href="https://arxiv.org/abs/1911.02150" target="_blank" rel="noopener">Shazeer, "Fast Transformer Decoding: One Write-Head is All You Need," 2019</a>
         (MQA) and
         <a href="https://arxiv.org/abs/2305.13245" target="_blank" rel="noopener">Ainslie, Lee-Thorp, de Jong, Zemlyanskiy, Lebrón, Sanghai, "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints," 2023</a>.
-        This is production technology, not a research curiosity — you can
+        This is production technology, not a research curiosity: you can
         read the head counts directly out of released model configs:
         Llama 2 70B and Llama 3 70B both use 64 query heads with 8
         key/value heads (<code>num_attention_heads: 64</code>,
@@ -154,7 +140,7 @@
     </main>
 
     <footer class="site">
-      <span>kv/cache — an independent, unofficial learning project.</span>
+      <span>kv/cache is an independent, unofficial learning project.</span>
       <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
     </footer>
   </div>
@@ -190,24 +176,26 @@
 
       root.innerHTML = "";
       root.className = "demo";
-      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("GQA / MQA — query heads sharing key/value heads")]));
+      root.appendChild(el("div", { class: "demo-label" }, [document.createTextNode("GQA / MQA: query heads sharing key/value heads")]));
 
       const legend = el("div", { class: "legend" });
-      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("key/value head — stored in the cache")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("key/value head: stored in the cache")]));
       const mutedSwatch = el("span", {
         style: "width:10px;height:10px;border:1px solid #ddd9cc;border-radius:2px;display:inline-block;background:rgba(23,22,15,0.05);",
       });
-      legend.appendChild(el("span", {}, [mutedSwatch, document.createTextNode("query head — recomputed each step, nothing of its own is cached")]));
+      legend.appendChild(el("span", {}, [mutedSwatch, document.createTextNode("query head: recomputed each step, nothing of its own is cached")]));
       root.appendChild(legend);
 
       const groupsWrap = el("div", { style: "display:flex;justify-content:center;gap:22px;flex-wrap:wrap;margin:20px 0 8px;min-height:110px;" });
       root.appendChild(groupsWrap);
 
       const controlsWrap = el("div", { class: "demo-controls" });
+      const inputId = "gqa-groups";
       const valSpan = el("span", { class: "val" }, [document.createTextNode("")]);
-      const labelRow = el("label", {}, [document.createTextNode("shared key/value heads "), valSpan]);
+      const labelRow = el("label", { for: inputId }, [document.createTextNode("shared key/value heads "), valSpan]);
       const input = el("input", {
         type: "range",
+        id: inputId,
         min: 0,
         max: GQA_GROUP_OPTIONS.length - 1,
         step: 1,

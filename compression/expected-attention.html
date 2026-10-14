@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Expected Attention — kv/cache</title>
+  <meta name="description" content="Forecast how much future queries will attend to each cached key from the statistics of queries the model has already issued: Expected Attention, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/expected-attention.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/expected-attention.html" />
+  <meta property="og:title" content="Expected Attention — kv/cache" />
+  <meta property="og:description" content="Forecast how much future queries will attend to each cached key from the statistics of queries the model has already issued: Expected Attention, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Expected Attention — kv/cache" />
+  <meta name="twitter:description" content="Forecast how much future queries will attend to each cached key from the statistics of queries the model has already issued: Expected Attention, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / attention-based</p>
+      <h1>Expected Attention</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> <a href="snapkv.html">SnapKV</a> predicts what generation will need by
+        observing real attention from the last few prompt tokens. Expected
+        Attention doesn't observe anything from generation, real or
+        simulated: it estimates the mean and spread of the queries the model
+        has already issued, rotates that estimate forward to represent
+        likely future query directions, and computes, in closed form, how
+        much attention a key can expect to receive from a query drawn from
+        that estimate.
+      </p>
+
+      <h2>What the score actually is</h2>
+      <p>
+        This method is kvpress's own contribution rather than an
+        implementation of an outside paper, so the docstring in
+        <code>expected_attention_press.py</code> is the primary source, and
+        it lays out five steps directly:
+      </p>
+      <ol>
+        <li>Compute the mean and covariance matrix of the queries before RoPE.</li>
+        <li>Compute the RoPE rotation matrix on the next <code>n_future_positions</code> and average it.</li>
+        <li>Apply that averaged rotation to the mean and covariance of the queries.</li>
+        <li>Since attention is <code>A = exp(Q @ K / sqrt(d))</code>, compute the expected attention <code>E(A) = exp(K @ mean.T / sqrt(d) + 1/2 K @ cov @ K.T / d)</code>.</li>
+        <li>Rescale the resulting scores by <code>(scores + epsilon) * ‖V‖₂</code>.</li>
+      </ol>
+      <p>
+        Step 4's formula is the theoretical target; what <code>score()</code>
+        actually computes is a softmax over
+        <code>mean_query · key / sqrt(d)</code> plus a quadratic covariance
+        correction term, divided by <code>d</code>, then run through
+        <code>softmax</code> across all cached keys. That's not literally
+        the same as normalizing the raw <code>exp(...)</code> expression in
+        step 4, since real attention itself is a softmax over per-key
+        scores, not an unnormalized exponential, so the softmax is doing the
+        normalization the docstring's formula leaves implicit.
+      </p>
+
+      <h2>Mean, covariance, and a forward-rotated RoPE</h2>
+      <p>
+        The mean and covariance are both computed from the model's own
+        <strong>past</strong> queries, before rotary position embeddings are
+        applied, dropping the first <code>n_sink</code> hidden states first
+        (avoiding outlier statistics from sink tokens). Query direction
+        alone (the mean) is a first-order estimate of what future queries
+        will look like; <code>use_covariance</code> (on by default) adds a
+        quadratic correction term capturing how much queries actually vary
+        around that mean, not just where they center. Because RoPE rotates
+        queries by however many positions have passed, and future queries
+        will sit at positions that don't exist yet, the method builds an
+        averaged rotation matrix over the next <code>n_future_positions</code>
+        (512 by default) and applies that single averaged rotation to both
+        the mean and the covariance, rather than trying to guess an exact
+        future position.
+      </p>
+      <p>
+        As with <a href="critical-kv.html">CriticalKV</a>, the resulting
+        score is optionally rescaled by the L2 norm of each token's value
+        vector (<code>use_vnorm</code>, on by default): a key that scores
+        well but whose value barely moves the output gets pulled back down.
+        That's exactly the overlap CriticalKV's source code warns about:
+        wrapping an <code>ExpectedAttentionPress</code> with
+        <code>use_vnorm</code> still enabled double-counts a value-magnitude
+        rescale that both methods apply. The first <code>n_sink</code> keys
+        (4 by default) are excluded from scoring entirely and padded back in
+        above the maximum score afterward, so they rank first in line for
+        whatever budget remains, the same sink-token treatment used
+        elsewhere on this site.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Shade tracks each non-sink token's score after the softmax and
+        value-norm rescale. The covariance-weight slider isn't a real
+        kvpress parameter, in the actual code <code>use_covariance</code> is
+        an on/off switch: this slider fades the quadratic term in and out
+        smoothly so you can see what it contributes.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real query
+        distribution, RoPE rotation, or key/value vector behind this demo.
+        The "mean-alignment" and "covariance" terms are generated locally
+        from a deterministic seed, illustrating the softmax-of-mean-plus-
+        covariance rule and the value-norm rescale real
+        <code>ExpectedAttentionPress</code> applies once actual query
+        statistics and key/value vectors come out of a forward pass.
+      </div>
+
+      <h3>The Stats variant: skip the live prompt entirely</h3>
+      <p>
+        Computing mean and covariance from the current prompt's own hidden
+        states works, but a short prompt gives a noisy estimate of a head's
+        "typical" query behavior. <code>ExpectedAttentionStatsPress</code>
+        sidesteps that by loading <strong>precomputed</strong> query
+        statistics instead: its <code>post_init_from_model()</code> either
+        reads them from a local <code>stats_folder</code> or fetches them
+        from a Hugging Face Hub collection keyed by the model name, the
+        calibration dataset, and how many samples were used. The default
+        calibration setup collects statistics from 100 samples of
+        <code>kmfoda/booksum</code> at a sequence length of 1000 tokens,
+        computed once per model, offline, and reused across every request
+        that model serves afterward, via
+        <code>expected_attention_with_stats.py</code>'s own
+        <code>collect_queries()</code> function. If no matching statistics
+        exist for a given model on the Hub, the press fails loudly rather
+        than falling back silently: it raises an error telling you to run
+        that collection script yourself first.
+      </p>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Unlike SnapKV, this method doesn't lean on there being a specific
+        "instruction at the end of the prompt" to observe: it's modeling
+        the query distribution statistically rather than reading one
+        concrete slice of it, so it doesn't degrade the same way when a
+        prompt has no clean observation window. And unlike Knorm, it's
+        actually forecasting attention toward a rotated future direction,
+        not relying on a static per-key property alone. The Stats variant
+        goes further and removes the live-prompt dependency altogether. The
+        cost is real complexity: this needs access to the model's RoPE
+        machinery (<code>rotary_emb</code>, per-head cos/sin) to build the
+        averaged rotation, and, with covariance enabled, a real
+        <code>head_dim x head_dim</code> covariance computation per head,
+        meaningfully heavier than a norm-only method like Knorm or a
+        straightforward attention average like SnapKV. The Stats variant
+        adds its own dependency too: it's only as good as the offline
+        calibration set (currently a fixed catalog of pre-uploaded
+        statistics on the Hub), and using it on a model that isn't already
+        covered means running the collection step yourself before you can
+        use it.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>ExpectedAttentionPress</code> and
+        <code>ExpectedAttentionStatsPress</code>. No separate paper backs
+        this one; the docstrings and source are the primary reference. See
+        the source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/expected_attention_press.py" target="_blank" rel="noopener">expected_attention_press.py</a>
+        and
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/expected_attention_with_stats.py" target="_blank" rel="noopener">expected_attention_with_stats.py</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeExpectedAttention(tokens, params) {
+      const N = tokens.length;
+      const nSink = Math.min(Math.round(params.nSink), N - 1);
+      const rest = tokens.slice(nSink);
+
+      // Simulated stand-ins for the two terms score() actually sums:
+      // mean_query . key / sqrt(d) (alignment with the average past query
+      // direction) and the quadratic covariance correction
+      // keys @ cov @ keys^T / d / 2 (how much the spread of past queries,
+      // not just their average, favors this key). Neither is a real dot
+      // product here.
+      const meanTerm = rest.map((tok, i) => (seeded(tok + i + "ea-mean") - 0.3) * 2.2);
+      const covTerm = rest.map((tok, i) => seeded(tok + i + "ea-cov") * 1.6);
+      const raw = meanTerm.map((m, i) => m + params.covWeight * covTerm[i]);
+
+      // softmax over the non-sink keys, exactly as score() does:
+      // F.softmax(scores, dim=-1)
+      const maxRaw = Math.max(...raw);
+      const exps = raw.map((r) => Math.exp(r - maxRaw));
+      const sumExp = exps.reduce((a, b) => a + b, 0) || 1;
+      let softmaxed = exps.map((e) => e / sumExp);
+
+      // Value-norm rescale (use_vnorm=True is the kvpress default):
+      // (scores + epsilon) * ||V||_2
+      const vnorm = rest.map((tok, i) => 0.2 + seeded(tok + i + "ea-vnorm") * 0.8);
+      const rescaled = softmaxed.map((s, i) => s * vnorm[i]);
+
+      // Pad the sink tokens back in above the max score, exactly as
+      // score() does: F.pad(scores, (n_sink, 0), value=scores.max() + 1)
+      const maxScore = Math.max(...rescaled, 0);
+      const full = new Array(N).fill(0);
+      const tags = new Map();
+      for (let i = 0; i < nSink; i++) {
+        full[i] = maxScore + 1;
+        tags.set(i, ["sink"]);
+      }
+      for (let i = 0; i < rescaled.length; i++) full[nSink + i] = rescaled[i];
+
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = full.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+      return { kept, scores: normalize(full), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "Expected Attention: softmax(mean + covariance) x value norm",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "nSink", label: "sink tokens", min: 0, max: 8, step: 1, default: 4 },
+        { key: "covWeight", label: "covariance weight (illustrative)", min: 0, max: 1, step: 0.05, default: 1 },
+      ],
+      compute: computeExpectedAttention,
+    });
+  </script>
+</body>
+</html>

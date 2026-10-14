@@ -1,16 +1,83 @@
 # Status — kv/cache project
 
-All planned content and QA work is complete as of this session. This file is kept as a
-record of what was done and what's still a deliberate open item — not an active punch list.
+This file is kept as a record of what was done and what's still a deliberate open item —
+not an active punch list.
 
 ## What exists
 
-12 topic pages under `compression/` (8 kvpress inference-time presses + 4
+32 topic pages under `compression/` (28 kvpress inference-time methods + 4
 architecture/systems/evaluation pages, unified into one nav tab and index page
 with subsections — previously split across separate `catalogue/`/`concepts/`
 directories), `index.html`, `about.html`, `basics.html`, `contact.html`,
 shared `css/style.css` + `js/sandbox.js`. Full structure and design-system
 notes are in `README.md`.
+
+## 2026-08-15 session: kvpress catalogue expanded from 8 to 28 methods
+
+Pulled the current full list of exported classes from `NVIDIA/kvpress` (44 as of this
+session, up from the ~40 the site previously assumed) via `gh api`, classified each one
+against its actual source (not just its docstring/paper abstract), and split them: 20
+were genuine standalone methods not yet on the site, 10 were pure wrappers/infrastructure
+(take a `press:`/`base_press:` param, no independent scoring idea of their own), and one
+already-covered wrapper (AdaKV) plus the already-covered core 8 rounded out the count.
+
+Added 20 new pages via 5 parallel subagents (one wave, non-overlapping file sets, matching
+the established "content manager" pattern): critical-kv, cur, expected-attention,
+duo-attention, chunkkv, qfilter, finch, lagkv, keydiff, kvzip, restorekv, cam, compactor
+(covers `LeverageScorePress`+`NonCausalAttnPress` too), fast-kvzip (covers both `KVzapPress`
+and `FastKVzipPress` as sibling learned approximations of KVzip), dms, simlayerkv,
+kvcompose, merging, capkv, lukv. Each agent verified its assigned presses against the real
+`.py` source (fetched locally first, not trusted from a summary) and against the cited
+papers via WebFetch, introduced new family tags where the existing 7 didn't fit
+(head-wise, partition-based, similarity-based, reconstruction-based, learned, threshold-based,
+low-rank, merging, structured), and left CSS-merge requests instead of touching the shared
+stylesheet directly. Two pages needed new scoped CSS (CaM's merge-vs-evict token states,
+LagKV's partition-box layout) — merged into `css/style.css` by the orchestrating session
+afterward, along with a small unrelated fix (`ul.rows a.row-link` → `ul.rows .row-link` so
+the new non-clickable wrapper-note rows get the same padding as real linked rows).
+
+The 10 pure wrappers (AdaKV, ComposedPress, ChunkPress, BlockPress, KeyRerotationPress,
+PerLayerCompressionPress, DecodingPress/PrefillDecodingPress/CompressionRatioDecodingPress
+as one family, RandomPress) got one grouped "Combinators & wrappers" section on
+`compression/index.html` instead of individual pages — a scoping decision the site owner
+made explicitly (asked via AskUserQuestion before generating 20+ pages) rather than one
+inferred silently, given the size of the undertaking.
+
+`about.html`'s "why these methods" section and the stale "eight methods... CaM/KVzip not
+covered yet" framing were rewritten to match (CaM and KVzip are exactly the two examples
+that section used to name as the known gap). `compression/index.html`'s "Inference-time"
+list grew from 8 rows to 28, ordered by family adjacency (not alphabetical) so related
+methods sit near each other, matching the existing single-flat-list pattern rather than
+introducing new `<h3>` subheadings — a deliberate call to avoid a new structural pattern
+the rest of the site doesn't use, even though 28 rows is a lot to scroll.
+
+Follow-up: ran the same read-only-agents + single-fix-pass pattern as the 2026-08-14
+stress test (5 parallel audits: humanization, demo correctness, cross-page consistency,
+shared-file regression, citation/link accuracy) across the 20 new pages, then applied
+every confirmed finding directly. Real fixes: a repeated budget-clamp bug
+(`Math.max(nSink, Math.floor(...))` instead of `Math.max(1, Math.floor(...))`) in
+cur.html, expected-attention.html, finch.html, and capkv.html silently over-guaranteed
+sink-token survival past what the real ranking promises, plus matching prose overclaims
+softened to match; an em-dash-as-clause-separator regression and a repeated
+"worth ___ing:" caveat-opener (compactor.html, chunkkv.html); two `<h2>` that should've
+been `<h3>` (critical-kv.html, expected-attention.html); a meta-description missing the
+site's ", interactively explained." suffix (simlayerkv.html); `README.md`'s Structure
+section, stale since before the catalogue/concepts merge, rewritten to list all 32 pages.
+
+The 5th audit (citation/link accuracy) failed twice on background-agent session-limit
+errors, so it was done directly instead: fetched every arXiv abstract page and every
+`github.com/NVIDIA/kvpress/blob/main/kvpress/presses/*.py` link cited across the 20 new
+pages and diffed the real title/authors against what each page claims. One real bug
+found: `simlayerkv.html` cited `arxiv.org/abs/2410.13846` as SimLayerKV, which was true
+at submission (verified via the `v1` snapshot) but the same arXiv ID now serves a
+different, later paper by an overlapping author set (`LightTransfer`) — arXiv allows an
+id to be replaced with a revised submission, so an unversioned link can silently start
+pointing at the wrong paper months or years later. Fixed by pinning the link to
+`.../abs/2410.13846v1` and adding a one-line note explaining why. Every other arXiv ID
+and every GitHub source link across the 20 pages checked out exactly (title, authors,
+and file existence all verified directly, not just spot-checked). Worth remembering for
+future citation audits: don't trust an unversioned arXiv link to keep meaning the same
+paper forever — pin to `vN` when citing a specific claim/result from that paper.
 
 ## What was done this session
 
@@ -59,11 +126,12 @@ Live at git repo `wastella/kv-cache` (public), hosted on GitHub Pages at
 
 ## Deliberately not done — these are calls for the site owner, not open bugs
 
-- **kvpress has 40+ presses total; this catalogue covers 8**, spanning the major families
-  (position, attention×2, prediction, norm, layer-wise, dimension-pruning, quantization).
-  Adding more is a content decision, not a defect — see `about.html`'s "Why these methods"
-  section for the current rationale, and `compression/index.html`'s note for what's explicitly
-  flagged as still missing (merging/low-rank methods like CaM/KVzip).
+- As of the 2026-08-15 expansion, the catalogue covers all 28 of kvpress's genuinely
+  distinct methods; the remaining ~10 exported classes are pure wrappers, covered as one
+  grouped note rather than individual pages (see `about.html`'s "Why these methods" section
+  and `compression/index.html#combinators`). If kvpress adds new presses later, re-run the
+  same classification (`gh api repos/NVIDIA/kvpress/contents/kvpress/presses` + read each
+  docstring to decide "wrapper" vs. "method") rather than assuming the count is still current.
 
 ## Conventions to preserve if extending this site later
 

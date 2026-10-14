@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KVzap &amp; Fast KVzip — kv/cache</title>
+  <meta name="description" content="Two labs, two small trained models, one goal: approximate KVzip's expensive reconstruction-based importance signal cheaply. KVzap and Fast KVzip, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/fast-kvzip.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/fast-kvzip.html" />
+  <meta property="og:title" content="KVzap &amp; Fast KVzip — kv/cache" />
+  <meta property="og:description" content="Two labs, two small trained models, one goal: approximate KVzip's expensive reconstruction-based importance signal cheaply. KVzap and Fast KVzip, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="KVzap &amp; Fast KVzip — kv/cache" />
+  <meta name="twitter:description" content="Two labs, two small trained models, one goal: approximate KVzip's expensive reconstruction-based importance signal cheaply. KVzap and Fast KVzip, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / learned</p>
+      <h1>KVzap &amp; Fast KVzip</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> KVzip scores every cached KV pair by actually reconstructing the
+        original context with the model itself, which is accurate but requires an extra forward
+        pass. KVzap and Fast KVzip are two later methods, from two different labs, released close
+        together, that both replace that reconstruction with a small trained model predicting the
+        same kind of score directly. They're not two names for the same thing: they're two
+        different architectures chasing the same shortcut.
+      </p>
+
+      <h2>What they're both approximating</h2>
+      <p>
+        KVzip (Kim et al., "Query-Agnostic KV Cache Compression with Context Reconstruction,"
+        arXiv 2505.23416) scores a cached KV pair by using the LLM itself to reconstruct the
+        original context from the compressed cache, teacher-forced, and recording the maximum
+        attention that pair receives during the reconstruction. Pairs the reconstruction barely
+        needs get pruned. It's accurate specifically because it's not a proxy, it's the model
+        telling you, via an actual forward pass, what it would have used, and reusable across
+        future queries once computed. The catch is exactly that forward pass: reconstructing the
+        context costs real compute on top of the original prefill, for every context you want to
+        compress. The paper reports a 3-4x cache size reduction and roughly 2x faster decoding
+        with FlashAttention, negligible accuracy loss.
+      </p>
+      <p>
+        KVzap and Fast KVzip both start from the same premise: whatever signal KVzip's
+        reconstruction is measuring, can a small model just predict it directly from hidden
+        states, skipping the reconstruction pass entirely? Both are literally trained (offline, on
+        a target model) to imitate that signal. Neither is derived from or wraps the other, and
+        neither wraps KVzip's own kvpress implementation, they're independent presses in their own
+        right.
+      </p>
+
+      <h2>KVzap: one small regressor per layer</h2>
+      <p>
+        kvpress's <code>KVzapPress</code> (Jegou, Jeblick, "KVzap: Fast, Adaptive, and Faithful KV
+        Cache Pruning," arXiv 2601.07891) is about as simple as a learned scorer gets. Its
+        <code>score()</code> runs the current layer's hidden states through one small trained
+        module, either a plain linear layer or a 2-layer MLP (<code>model_type</code> controls
+        which), and returns whatever comes out as the importance score, no further logic. There's
+        one such module per transformer layer, loaded from a real checkpoint on the Hub named
+        after the target model, e.g. <code>nvidia/KVzap-mlp-Qwen3-8B</code>. It runs during both
+        prefilling and decoding, unlike KVzip's own reconstruction, which only makes sense as a
+        one-time prefill pass. The paper reports 2-4x compression with negligible accuracy loss
+        and state-of-the-art results on the kvpress leaderboard at time of writing.
+      </p>
+
+      <h2>Fast KVzip: a trained per-head gate, plus hand-coded guardrails</h2>
+      <p>
+        kvpress's <code>FastKVzipPress</code> (Kim, Han, Yun, NAVER AI Lab, "Fast KVzip: Efficient
+        and Accurate LLM Inference with Gated KV Eviction," arXiv 2601.17668) is architecturally
+        more involved. Each layer gets its own trained <code>FastKVzipGate</code>: small
+        query/key projections (down to a 16-dimensional space by default) with RMSNorm, a learned
+        per-head "base" vector standing in for the sink positions, and a sigmoid-shaped score
+        comparing each token's projected key against both the live query stream and that base.
+        It's a genuinely different, more head-aware design than KVzap's flat regressor. Its
+        checkpoints come from the original authors' release on the Hub, loaded through kvpress's
+        <code>load_fastkvzip()</code>; the docstring points to
+        <a href="https://github.com/Janghyun1230/FastKVzip" target="_blank" rel="noopener">the original repository</a>
+        for a fully optimized version with actual chunked-prefill compression, since kvpress's
+        implementation, by its own docstring, makes "minimal changes" rather than reproducing
+        every optimization. The paper reports up to 70% KV eviction while maintaining performance.
+      </p>
+      <p>
+        On top of the learned score, <code>FastKVzipPress</code> hard-codes two overrides that
+        have nothing to do with training: it forces the score of the first <code>n_sink</code>
+        tokens (4 by default) to a certain-keep value, and does the same for a trailing window
+        sized either as a fixed <code>window_size</code> or as a fraction (<code>window_ratio</code>,
+        2% by default) of the context length for shorter contexts. So sink and recent tokens
+        survive no matter what the trained gate says about them; only the middle is left to the
+        model. <code>KVzapPress</code> has no equivalent, whatever it does with sink or recency has
+        to be something the model itself learned, kvpress doesn't hard-code any of it. One more
+        real difference worth knowing: in kvpress, <code>FastKVzipPress</code> only scores and
+        compresses during prefill (its forward hook checks and returns early otherwise), so despite
+        the gate architecture being able to run per-token, this implementation doesn't currently
+        sparsify during decoding the way <code>KVzapPress</code> does.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        We cannot show either trained model's real output here: both are small neural networks
+        with weights fit offline to a specific base model, and this page has no model behind it.
+        What follows only demonstrates the one part of Fast KVzip's mechanism that's real,
+        published code, not a trained weight: the sink and recent-window overrides that force
+        certain positions to survive regardless of what the learned gate would say. Switch the
+        toggle to compare it against KVzap, which has no such override at all.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Double-bordered tokens are the forced sink; tokens with a colored border are the forced
+        recent window. Both only apply in "Fast KVzip" mode. In "KVzap" mode every token, sink and
+        recent included, is scored by the (simulated) learned model with no exceptions.
+      </p>
+      <div class="note">
+        <strong>Simulated, and not an approximation of anything real.</strong> Unlike this
+        catalogue's other demos, the shading on non-overridden tokens here isn't standing in for a
+        known formula computed with placeholder numbers, it's an arbitrary value with no
+        relationship to what either trained model would actually predict. There is no public
+        formula for KVzap's or Fast KVzip's learned scores to approximate: that's the entire point
+        of training a model instead of hand-deriving one. Only the sink/window override logic
+        shown here (Fast KVzip mode) is real, verifiable behavior straight from the source.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        A trained scorer can in principle pick up on patterns nobody would think to hand-encode
+        into a formula, and both report substantial wins: KVzap at 2-4x compression, Fast KVzip at
+        up to 70% eviction, both cheap enough to run inline rather than as a separate
+        reconstruction pass. That's the whole appeal over KVzip itself.
+      </p>
+      <p>
+        The costs are specific to being learned rather than derived. Both need a checkpoint
+        trained for the exact base model in use: <code>KVzapPress</code> builds its checkpoint
+        name directly from <code>model.config.name_or_path</code>, and
+        <code>FastKVzipPress</code> raises an error pointing you to the release page if no
+        matching gate exists. Neither works out of the box on an arbitrary or fine-tuned model the
+        way a formula-based method like Knorm or TOVA does; you either need the exact model
+        covered by a released checkpoint or you need to train your own. And precisely because
+        they're learned, neither is auditable the way a formula is: you can't read what a trained
+        gate keyed on by inspecting the code, only by inspecting the weights themselves, and this
+        page hasn't done that and can't fake having done it.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements these as separate presses,
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/kvzap_press.py" target="_blank" rel="noopener">kvzap_press.py</a>
+        and
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/fastkvzip_press.py" target="_blank" rel="noopener">fastkvzip_press.py</a>.
+        KVzap paper:
+        <a href="https://arxiv.org/abs/2601.07891" target="_blank" rel="noopener">Jegou, Jeblick, "KVzap: Fast, Adaptive, and Faithful KV Cache Pruning," 2026</a>.
+        Fast KVzip paper:
+        <a href="https://arxiv.org/abs/2601.17668" target="_blank" rel="noopener">Kim, Han, Yun, "Fast KVzip: Efficient and Accurate LLM Inference with Gated KV Eviction," 2026</a>
+        (NAVER AI Lab; original repository:
+        <a href="https://github.com/Janghyun1230/FastKVzip" target="_blank" rel="noopener">Janghyun1230/FastKVzip</a>).
+        Both build on KVzip:
+        <a href="https://arxiv.org/abs/2505.23416" target="_blank" rel="noopener">Kim et al., "KVzip: Query-Agnostic KV Cache Compression with Context Reconstruction," 2025</a>,
+        which doesn't have its own page in this catalogue yet.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function computeFastKVzip(tokens, params) {
+      const N = tokens.length;
+      const variant = Math.round(params.variant) === 1 ? "fast" : "kvzap";
+      const nSink = Math.min(Math.round(params.nSink), N);
+      const windowSize = Math.min(Math.floor(N * params.windowRatio), Math.max(0, N - nSink));
+
+      // Arbitrary per-token placeholder standing in for "whatever the
+      // trained model would output" — see the note above the demo. This is
+      // not an approximation of a known formula the way the rest of this
+      // catalogue's simulated scores are.
+      const raw = tokens.map((tok, i) => 0.1 + seeded(tok + i + "learned-gate") * 0.9);
+      const scores = raw.slice();
+      const tags = new Map();
+
+      if (variant === "fast") {
+        for (let i = 0; i < nSink; i++) {
+          scores[i] = 1;
+          tags.set(i, ["sink"]);
+        }
+        for (let i = Math.max(nSink, N - windowSize); i < N; i++) {
+          scores[i] = 1;
+          tags.set(i, (tags.get(i) || []).concat("window"));
+        }
+      }
+
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = scores.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+
+      return { kept, scores: normalize(scores), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "learned score, plus Fast KVzip's sink/window overrides",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "variant", label: "press", min: 0, max: 1, step: 1, default: 1, format: (v) => (v === 1 ? "Fast KVzip" : "KVzap") },
+        { key: "nSink", label: "n_sink (Fast KVzip only)", min: 0, max: 8, step: 1, default: 4 },
+        { key: "windowRatio", label: "window_ratio (Fast KVzip only)", min: 0, max: 0.4, step: 0.02, default: 0.02, format: (v) => Math.round(v * 100) + "%" },
+      ],
+      compute: computeFastKVzip,
+    });
+  </script>
+</body>
+</html>

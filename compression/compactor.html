@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Compactor — kv/cache</title>
+  <meta name="description" content="Blend a geometry-only leverage score with a non-causal chunked-attention score to decide what survives compression: Compactor, interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/compactor.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/compactor.html" />
+  <meta property="og:title" content="Compactor — kv/cache" />
+  <meta property="og:description" content="Blend a geometry-only leverage score with a non-causal chunked-attention score to decide what survives compression: Compactor, interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Compactor — kv/cache" />
+  <meta name="twitter:description" content="Blend a geometry-only leverage score with a non-causal chunked-attention score to decide what survives compression: Compactor, interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / low-rank</p>
+      <h1>Compactor</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Compactor isn't a new scoring idea by itself, it's a wrapper that
+        blends two of them: a score derived purely from the geometry of the key vectors, no
+        attention involved, and a score from a deliberately non-causal attention pass that lets
+        every token look both forward and backward. kvpress ships both halves as their own
+        presses; Compactor just combines them.
+      </p>
+
+      <h2>Two ingredients, one blend</h2>
+      <p>
+        Chari and Van Durme's Compactor scores every cached key with a weighted sum of two
+        independent signals, computed once during prefill:
+      </p>
+      <p>
+        <strong>Leverage score.</strong> Statistical leverage is a classical idea from regression:
+        it measures how much an individual data point would change a least-squares fit if it were
+        removed, i.e. how much of an outlier it is relative to everything else. kvpress's
+        <code>LeverageScorePress</code> approximates this on the pre-RoPE key vectors without ever
+        forming a full sequence-length-by-sequence-length matrix: it right-multiplies the
+        (mean-centered) keys by a small random Gaussian sketch (48 columns by default), builds a
+        tiny Gram matrix from that sketch, and solves it with a Cholesky decomposition to recover
+        an approximate leverage score per token. The scores are z-normalized. Nothing here looks
+        at a query or an attention weight, it's purely about how unusual a key's geometry is.
+      </p>
+      <p>
+        <strong>Non-causal chunked attention.</strong> Normal attention during prefill is causal:
+        token <em>i</em> can only attend to tokens at or before it. kvpress's
+        <code>NonCausalAttnPress</code> deliberately breaks that rule for scoring purposes only.
+        It tiles the sequence into chunks (256 tokens by default), and inside each chunk lets
+        every query attend to every key, forward and backward, then sums up how much attention
+        each key receives from all the queries in its chunk. That sum gets weighted by the key's
+        own value-vector norm, lightly smoothed, and z-normalized. It's a real attention-based
+        score, just not a causal one: a key can be marked important because a query <em>before</em>
+        it in the sequence would want to attend to it, something no causal method can see during
+        prefill.
+      </p>
+      <p>
+        Compactor's <code>score()</code> then computes
+        <code>blending × leverage_z + attention_z</code>. That's worth reading carefully: it isn't
+        a weighted average of the two, the attention term always keeps full weight and
+        <code>blending</code> only scales the leverage term up or down. By default
+        <code>blending</code> is set equal to <code>compression_ratio</code>, which the docstring
+        calls a good heuristic default rather than something derived from the paper's math. The
+        first <code>sink_size_start</code> (8 by default) and last <code>sink_size_end</code> (4)
+        tokens get their combined score overwritten with the maximum score among the rest, so
+        they'll typically survive, but that's a soft nudge, not an absolute guarantee: if the
+        compression budget ends up smaller than the total number of sink positions, some of them
+        still get pruned, they're just tied for the top of the ranking rather than exempt from it.
+        The press only supports prefill; it asserts on this and will fail loudly if you try it
+        mid-decode.
+      </p>
+
+      <h2>Try it</h2>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Shade blends a simulated leverage score (scaled by the blending slider) with a simulated
+        non-causal-attention score (always full weight). Double-bordered tokens are the fixed
+        sink positions (first 8, last 4, kvpress's real defaults). Watch them get pruned anyway
+        once the ratio gets aggressive enough that the whole budget can't fit all twelve.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real Gaussian sketch or non-causal
+        attention pass behind these numbers. Both scores are assigned deterministically from each
+        token's text, purely to demonstrate the blending and sink-protection rules Compactor
+        applies once real leverage and attention scores come out of a forward pass.
+      </div>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Compactor is training-free and query-agnostic: compression happens once at prefill and
+        the result is reusable no matter what the model is later asked about, which matters if
+        the same long context gets queried repeatedly. Combining a purely geometric signal with a
+        genuinely attention-based one (even a non-causal one) gives it something neither signal has
+        alone: leverage catches outlier keys that attention-based methods like SnapKV might miss,
+        while the non-causal attention term catches keys a query would actually want, which a
+        purely geometric method like Knorm can't see. Per the paper's own reported numbers,
+        Compactor matches baseline accuracy while retaining roughly 20% fewer tokens than
+        competing methods, and reports a 68% reduction in KV memory on LongBench.
+      </p>
+      <p>
+        The costs are specific. It's prefill-only, so it can't keep compressing a cache that's
+        still growing during decode the way DMS or SimLayerKV can. The Cholesky solve and Gaussian
+        sketch avoid ever materializing a full attention matrix, but they're still real extra
+        compute spent at compression time, on top of the forward pass itself. The non-causal
+        attention score is chunked with a hard 256-token boundary by default, so a key's score
+        only reflects what's asking for it within its own chunk, nothing outside that window plays
+        a role. And as above, sink protection is a ranking nudge, not a hard floor: at extreme
+        compression ratios, even sink tokens compete with each other for a shrinking budget.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>CompactorPress</code>, a wrapper that instantiates and
+        calls the <code>score()</code> methods of <code>LeverageScorePress</code> and
+        <code>NonCausalAttnPress</code> directly, then blends and pads the results. See the
+        source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/compactor_press.py" target="_blank" rel="noopener">compactor_press.py</a>,
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/leverage_press.py" target="_blank" rel="noopener">leverage_press.py</a>,
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/non_causal_attention_press.py" target="_blank" rel="noopener">non_causal_attention_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/pdf/2507.08143v1" target="_blank" rel="noopener">Chari, Van Durme, "Compactor: Calibrated Query-Agnostic KV Cache Compression with Approximate Leverage Scores," 2025</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    function zNorm(arr) {
+      const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+      const variance = arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length;
+      const std = Math.max(Math.sqrt(variance), 1e-6);
+      return arr.map((v) => (v - mean) / std);
+    }
+
+    function computeCompactor(tokens, params) {
+      const N = tokens.length;
+      const sinkStart = Math.min(8, N);
+      const sinkEnd = Math.min(4, Math.max(0, N - sinkStart));
+      const midCount = Math.max(0, N - sinkStart - sinkEnd);
+
+      // Synthetic per-token "leverage" score: mostly low, with occasional
+      // spikes standing in for geometric outliers among the key vectors.
+      const leverageRaw = [];
+      // Synthetic per-token "non-causal attention" score: smoother, no
+      // strict positional bias, since non-causal scoring can look both ways.
+      const attnRaw = [];
+      for (let i = 0; i < midCount; i++) {
+        const idx = sinkStart + i;
+        const tok = tokens[idx];
+        const isOutlier = seeded(tok + idx + "lev-spike") < 0.18;
+        leverageRaw.push(isOutlier ? 0.55 + seeded(tok + idx + "lev-mag") * 0.9 : seeded(tok + idx + "lev-base") * 0.3);
+        attnRaw.push(0.2 + seeded(tok + idx + "nca") * 0.8);
+      }
+
+      const zLev = midCount > 0 ? zNorm(leverageRaw) : [];
+      const zAttn = midCount > 0 ? zNorm(attnRaw) : [];
+      const blended = zLev.map((v, i) => params.blending * v + zAttn[i]);
+      const maxBlend = blended.length > 0 ? Math.max(...blended) : 0;
+
+      const fullScores = new Array(N).fill(maxBlend);
+      for (let i = 0; i < midCount; i++) fullScores[sinkStart + i] = blended[i];
+
+      // Real kvpress computes n_kept via Python's int(), which truncates
+      // rather than rounds; Math.floor matches that for non-negative values.
+      const budget = Math.max(1, Math.floor(N * (1 - params.ratio)));
+      const ranked = fullScores.map((s, i) => [s, i]).sort((a, b) => b[0] - a[0]);
+      const kept = new Set(ranked.slice(0, budget).map((p) => p[1]));
+
+      const tags = new Map();
+      for (let i = 0; i < sinkStart; i++) tags.set(i, ["sink"]);
+      for (let i = N - sinkEnd; i < N; i++) tags.set(i, ["sink"]);
+
+      return { kept, scores: normalize(fullScores), tags };
+    }
+
+    createCompressionDemo({
+      root: document.getElementById("demo"),
+      tokens: SAMPLE_TOKENS,
+      label: "Compactor: blending × leverage + non-causal attention",
+      controls: [
+        { key: "ratio", label: "compression ratio", min: 0, max: 0.85, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "blending", label: "blending (leverage weight)", min: 0, max: 1, step: 0.05, default: 0.5, format: (v) => v.toFixed(2) },
+      ],
+      compute: computeCompactor,
+    });
+  </script>
+</body>
+</html>

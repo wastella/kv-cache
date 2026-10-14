@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DuoAttention — kv/cache</title>
+  <meta name="description" content="Some attention heads genuinely need the whole cache; most only need a sink and a recent window. DuoAttention decides per head, not per token: interactively explained." />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="../favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="canonical" href="https://wastella.github.io/kv-cache/compression/duo-attention.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="kv/cache" />
+  <meta property="og:url" content="https://wastella.github.io/kv-cache/compression/duo-attention.html" />
+  <meta property="og:title" content="DuoAttention — kv/cache" />
+  <meta property="og:description" content="Some attention heads genuinely need the whole cache; most only need a sink and a recent window. DuoAttention decides per head, not per token: interactively explained." />
+  <meta property="og:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="kv/cache: an interactive field guide to KV cache compression" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="DuoAttention — kv/cache" />
+  <meta name="twitter:description" content="Some attention heads genuinely need the whole cache; most only need a sink and a recent window. DuoAttention decides per head, not per token: interactively explained." />
+  <meta name="twitter:image" content="https://wastella.github.io/kv-cache/og-image.png" />
+  <link rel="stylesheet" href="../css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="row">
+        <a href="../index.html" class="quiet wordmark">kv/cache</a>
+        <nav class="primary">
+          <a href="../index.html">Home</a>
+          <a href="../basics.html">Basics</a>
+          <a href="index.html" class="active">Compression</a>
+          <a href="../about.html">About</a>
+          <a href="../contact.html">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <p class="kicker"><a href="index.html" class="quiet">compression</a> / head-wise</p>
+      <h1>DuoAttention</h1>
+      <p class="lede">
+        <strong>TL;DR:</strong> Every method so far in this catalogue decides which
+        <em>tokens</em> to keep, and applies that decision the same way to
+        every attention head. DuoAttention asks a different question first:
+        does this <em>head</em> even need the full cache? Some heads
+        genuinely attend across the whole context; most, it turns out,
+        barely look past a handful of sink tokens and whatever's recent.
+      </p>
+
+      <h2>Retrieval heads and streaming heads</h2>
+      <p>
+        Xiao, Tang, Zuo, Guo, Yang, Tang, Fu, and Han's paper splits
+        attention heads into two kinds. <strong>Retrieval heads</strong> are
+        the ones whose job actually requires seeing the whole context: the
+        kind of head that lets a model answer "what number appeared on page
+        12" from something read pages ago. <strong>Streaming heads</strong>
+        do something much closer to what
+        <a href="streaming-llm.html">StreamingLLM</a> imposes on an entire
+        model by fiat: attention that concentrates almost entirely on a few
+        initial sink tokens plus whatever's recent, regardless of how far
+        back the rest of the context goes. The difference is this isn't a
+        rule DuoAttention is imposing, it's a pattern the paper found
+        already exists in a trained model, per head, and the point of the
+        method is to detect it and stop paying for cache those heads never
+        use.
+      </p>
+
+      <h2>Measuring which heads are which</h2>
+      <p>
+        Because it's a property of the head rather than of any one prompt,
+        it can be measured once, offline, and reused. kvpress's
+        <code>DuoAttentionPress.load_attention_pattern()</code> downloads a
+        precomputed per-(layer, key/value-head) score array directly from
+        files hosted in the DuoAttention GitHub repository, but only for a
+        fixed list of checkpoints it recognizes:
+        <code>togethercomputer/Llama-2-7B-32K-Instruct</code>, two Gradient
+        AI long-context Llama-3 checkpoints, Meta's
+        <code>Llama-3.1-8B-Instruct</code>, and both
+        <code>Mistral-7B-Instruct-v0.2</code> and
+        <code>v0.3</code>. Point it at any other model without setting
+        <code>on_the_fly_scoring=True</code> and the assertion fails
+        outright. The on-the-fly path is kvpress's own addition, and its
+        docstring calls it "experimental": it runs 50 sampled BookSum
+        passages through the model, takes the mean query and key per layer,
+        applies RoPE, and measures the area under the cumulative attention
+        curve for the last token as a proxy for how much that head needs
+        full context.
+      </p>
+      <p>
+        <code>head_compression_ratio</code> then decides what fraction of
+        <em>all</em> heads, across every layer, get converted to streaming.
+        The lowest-scoring heads go first (an ascending sort over the whole
+        score array), on the reasoning that those are the heads the
+        measured pattern is least confident actually need full context.
+      </p>
+
+      <h2>Try it</h2>
+      <p class="muted" style="font-size:13.5px;">
+        This isn't a single row of tokens like most pages here: DuoAttention
+        doesn't score tokens at all, it decides, per head, whether that
+        head's cache gets trimmed. Each row below is one simulated head's
+        view of the same 29-token sample sentence.
+      </p>
+      <div id="demo"></div>
+      <p class="muted" style="font-size:12.5px;">
+        Raise the compression ratio and more heads flip from retrieval to
+        streaming, lowest simulated score first. A streaming head keeps only
+        its sink tokens and its recent window; a retrieval head keeps
+        everything.
+      </p>
+      <div class="note">
+        <strong>Simulated, not measured.</strong> There's no real per-head
+        attention pattern here: each head's "how much it needs full
+        context" score is generated locally from a deterministic seed, not
+        downloaded from DuoAttention's real precomputed pattern files. The
+        sink and recent-window sizes are also scaled way down to fit a
+        29-token demo sentence; real DuoAttention checkpoints default to a
+        128-token sink and a 256-token recent window.
+      </div>
+
+      <h2>Masking, not trimming</h2>
+      <p>
+        A streaming head's compress step doesn't shrink the K/V tensors it
+        returns. It computes which <code>(batch, head, position)</code>
+        triples fall in the masked middle (everything between the sink and
+        the recent window) and stores those indices on the module for the
+        attention computation to apply directly, the same indirect mechanism
+        <a href="critical-kv.html">CriticalAdaKV</a> uses on this site.
+        Whether that actually turns into a smaller cache in memory depends
+        on how the serving stack handles those masked indices downstream,
+        not on anything guaranteed by <code>compress()</code> alone.
+      </p>
+
+      <h2>Where this shines, and where it doesn't</h2>
+      <p>
+        Because the decision is per-head rather than per-token, DuoAttention
+        composes with real token-eviction methods running on top of the same
+        cache: a head kept as "retrieval" can still have its tokens trimmed
+        by any <code>ScorerPress</code> in this catalogue. And the payoff at
+        long context lengths is large: the paper reports up to a 2.55x
+        memory reduction for MHA models and 1.67x for GQA models, decoding
+        up to 2.18x and 1.50x faster respectively, pre-filling up to 1.73x
+        and 1.63x faster, and, combined with quantization, Llama-3-8B
+        decoding a 3.3 million token context on a single A100 GPU. The cost
+        is that it depends on knowing which heads are which for your
+        specific model: the pattern-file path only covers a short, fixed
+        list of checkpoints and needs a network fetch to GitHub at load
+        time, and the fallback "on-the-fly" scoring is explicitly labeled
+        experimental in kvpress's own docstring and costs a full forward
+        pass over 50 calibration samples before you get an answer. Neither
+        is as cheap or as portable as pointing a <code>ScorerPress</code> at
+        an arbitrary model the way most of the rest of this catalogue can.
+      </p>
+
+      <h3>Real implementation</h3>
+      <p>
+        kvpress implements this as <code>DuoAttentionPress</code>. See the
+        source:
+        <a href="https://github.com/NVIDIA/kvpress/blob/main/kvpress/presses/duo_attention_press.py" target="_blank" rel="noopener">duo_attention_press.py</a>.
+        Original paper:
+        <a href="https://arxiv.org/abs/2410.10819" target="_blank" rel="noopener">Xiao, Tang, Zuo, Guo, Yang, Tang, Fu, Han, "DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads," 2024</a>.
+      </p>
+    </main>
+
+    <footer class="site">
+      <span>kv/cache is an independent, unofficial learning project.</span>
+      <span><a href="https://github.com/NVIDIA/kvpress" target="_blank" rel="noopener">NVIDIA/kvpress</a> on GitHub</span>
+    </footer>
+  </div>
+
+  <script src="../js/sandbox.js"></script>
+  <script>
+    const DUO_HEADS = 8;
+
+    // Python's round() is round-half-to-even, not round-half-up like
+    // JS's Math.round(). Real DuoAttentionPress computes
+    // n_pruned = round(head_scores.size * head_compression_ratio), so
+    // matching it at the boundary cases needs the same tie-breaking rule
+    // (see PyramidKV's pyRound() on this site for the same fix).
+    function duoRound(x) {
+      const floor = Math.floor(x);
+      const diff = x - floor;
+      if (diff < 0.5) return floor;
+      if (diff > 0.5) return floor + 1;
+      return floor % 2 === 0 ? floor : floor + 1;
+    }
+
+    function createDuoDemo({ root, tokens }) {
+      const N = tokens.length;
+      const params = { ratio: 0.5, sinkSize: 2, recentSize: 4 };
+
+      // Simulated per-head "needs full context" score, standing in for the
+      // real per-(layer, kv-head) head_scores array DuoAttentionPress loads
+      // from a precomputed attention-pattern file. Lower score = more
+      // suited to streaming; real code converts the lowest-scoring heads
+      // first via an ascending argsort.
+      const headScore = [];
+      for (let h = 0; h < DUO_HEADS; h++) headScore.push(seeded("duo-head-" + h));
+
+      root.innerHTML = "";
+      root.className = "demo";
+      root.appendChild(
+        el("div", { class: "demo-label" }, [document.createTextNode(DUO_HEADS + " simulated heads x " + N + " cached tokens")])
+      );
+
+      const legend = el("div", { class: "legend" });
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch" }), document.createTextNode("kept in this head's cache")]));
+      legend.appendChild(el("span", {}, [el("span", { class: "swatch evicted" }), document.createTextNode("evicted from this head's cache")]));
+      root.appendChild(legend);
+
+      const grid = el("div", { class: "channel-grid" });
+      root.appendChild(grid);
+
+      const rows = [];
+      for (let h = 0; h < DUO_HEADS; h++) {
+        const cellsWrap = el("div", { class: "channel-cells" });
+        const cells = [];
+        for (let i = 0; i < N; i++) {
+          const cell = el("span", { class: "channel-cell" });
+          cells.push(cell);
+          cellsWrap.appendChild(cell);
+        }
+        const label = el("div", { class: "channel-label" }, [document.createTextNode("head " + (h + 1))]);
+        const badge = el("span", { class: "qkv-badge" }, [document.createTextNode("retrieval")]);
+        grid.appendChild(el("div", { class: "channel-row" }, [label, cellsWrap, badge]));
+        rows.push({ cells, badge });
+      }
+
+      const controlsWrap = el("div", { class: "demo-controls" });
+      const controls = [
+        { key: "ratio", label: "head compression ratio", min: 0, max: 1, step: 0.05, default: 0.5, format: (v) => Math.round(v * 100) + "%" },
+        { key: "sinkSize", label: "sink tokens (illustrative)", min: 0, max: 6, step: 1, default: 2 },
+        { key: "recentSize", label: "recent window (illustrative)", min: 1, max: 10, step: 1, default: 4 },
+      ];
+      controls.forEach((c, idx) => {
+        const inputId = `duo-${c.key}-${idx}`;
+        const valSpan = el("span", { class: "val" }, [document.createTextNode(c.format ? c.format(c.default) : String(c.default))]);
+        const labelRow = el("label", { for: inputId }, [document.createTextNode(c.label + " "), valSpan]);
+        const input = el("input", { type: "range", id: inputId, min: c.min, max: c.max, step: c.step, value: c.default });
+        input.addEventListener("input", () => {
+          const v = parseFloat(input.value);
+          params[c.key] = v;
+          valSpan.textContent = c.format ? c.format(v) : String(v);
+          render();
+        });
+        controlsWrap.appendChild(el("div", { class: "control" }, [labelRow, input]));
+      });
+      root.appendChild(controlsWrap);
+
+      const statsWrap = el("div", { class: "demo-stats" });
+      const statStreaming = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("streaming heads")]),
+      ]);
+      const statCompression = el("div", { class: "stat" }, [
+        el("div", { class: "stat-num" }, [document.createTextNode("—")]),
+        el("div", { class: "stat-label" }, [document.createTextNode("est. cache compression")]),
+      ]);
+      statsWrap.appendChild(statStreaming);
+      statsWrap.appendChild(statCompression);
+      root.appendChild(statsWrap);
+
+      function render() {
+        const nPruned = Math.min(DUO_HEADS, Math.max(0, duoRound(DUO_HEADS * params.ratio)));
+        const rankedHeads = headScore.map((s, h) => [s, h]).sort((a, b) => a[0] - b[0]);
+        const streamingHeads = new Set(rankedHeads.slice(0, nPruned).map((p) => p[1]));
+
+        const sink = Math.min(params.sinkSize, N);
+        const recent = Math.min(params.recentSize, N);
+        // Real compress() masks keys[sink_size:-recent_size]; when that
+        // slice would be empty (a short sequence relative to sink+recent),
+        // nothing gets masked at all, which falls out naturally here too.
+        const windowStart = Math.max(sink, N - recent);
+
+        rows.forEach((row, h) => {
+          const isStreaming = streamingHeads.has(h);
+          row.badge.textContent = isStreaming ? "streaming" : "retrieval";
+          row.badge.className = isStreaming ? "qkv-badge discarded" : "qkv-badge";
+          row.cells.forEach((cell, i) => {
+            const kept = !isStreaming || i < sink || i >= windowStart;
+            cell.classList.toggle("pruned", !kept);
+          });
+        });
+
+        statStreaming.firstChild.textContent = `${nPruned} / ${DUO_HEADS}`;
+        const streamingFrac = nPruned / DUO_HEADS;
+        // Real property: compression_ratio_ = streaming_mask.mean() *
+        // (1 - (sink_size + recent_size) / k_len). Clamped at 0 here for
+        // display when the window already covers the whole sequence.
+        const windowFrac = Math.max(0, 1 - (sink + recent) / N);
+        const compression = streamingFrac * windowFrac;
+        statCompression.firstChild.textContent = Math.round(compression * 100) + "%";
+      }
+
+      render();
+      return { render, params };
+    }
+
+    createDuoDemo({ root: document.getElementById("demo"), tokens: SAMPLE_TOKENS });
+  </script>
+</body>
+</html>
